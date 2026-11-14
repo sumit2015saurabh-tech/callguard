@@ -61,11 +61,11 @@ Data stays in the user's browser (IndexedDB plus the optional local folder). Not
 
 The fraud category and labels always come from **your microservice**. The dashboard never guesses or simulates them.
 
-**Default service:** `https://call-audio-api-c3qg.onrender.com/v1/audio/transcribe` (set in `docs/assets/config.js`).
+**Default service:** `https://call-audio-api-c3qg.onrender.com/v1/audio/analyze` (set in `docs/assets/config.js`).
 
 ### Token verification
 
-Each user pastes the **API token issued by the service** in **Settings → Microservice**. It is saved only in their browser, under their account, and never included in backups. Every request sends `Authorization: Bearer <token>`. **The service verifies the token** and answers `401` if it's missing or wrong, and the dashboard shows that clearly. Without a token, the dashboard refuses to send audio. **Test connection & token** checks three things: the service is up (`/healthz`), the browser is allowed to call it (CORS), and the token is accepted (`/health`).
+Each user pastes the **API token issued by the service** in **Settings → Microservice**. It is saved only in their browser, under their account, and never included in backups. Every request sends `Authorization: Bearer <token>`. **The service verifies the token** and answers `401` if it's missing or wrong, and the dashboard shows that clearly. Without a token, the dashboard refuses to send audio. **Test connection & token** checks three things: the service is up (`/healthz`), the browser is allowed to call it (CORS), and the token is accepted, with the classifier configured (`/v1/status`).
 
 ### Required on the service: CORS
 
@@ -83,41 +83,19 @@ Add this middleware **after** the token-check middleware, so it wraps it and ans
 
 ### Microservice: `POST <serviceUrl>`, `multipart/form-data`
 
-| field | value |
-|---|---|
-| `audio` | the uploaded or recorded audio (field name set by `audioField` in config) |
-| `call_token` | CallGuard's token for this call |
+Exactly **one** field, `audio`, holding the uploaded or recorded call (the service rejects extra fields). The recording can be at most 120 s long, which is checked before upload.
 
-Response JSON. `category` is **required**, plus `transcript` or `summary`. `labels` are shown exactly as sent (users never add labels):
+Response:
 
 ```json
-{
-  "transcript": "Caller: This is your bank...",
-  "summary": "Caller pretends to be the bank and asks for the OTP.",
-  "category": "F1",
-  "confidence": 0.91,
-  "labels": ["otp-request", "bank-impersonation", "urgent"],
-  "duration": 112,
-  "language": "en",
-  "tokens": 154
-}
+{ "request_id": "…", "classes": ["F3", "gift-card", "threat"], "summary": "Caller posing as a tax officer…" }
 ```
 
-`category` may be `"F3"`, `3`, or the category name. `labels` may be an array or a comma-separated string.
+- **Category:** the F0–F9 code (or category name, e.g. `"Government impersonation"`) found in `classes`. `not_fraud` maps to F0.
+- **Labels:** every entry in `classes`.
+- A `category` / `labels` / `transcript` field is also accepted if the service adds one.
 
-### Errors shown to the user
-
-Nothing is saved and no alerts are sent when:
-
-- no audio was chosen (or the file is empty, or isn't audio);
-- the microservice URL isn't set;
-- the microservice can't be reached (down, wrong URL, or CORS);
-- it doesn't answer before the timeout;
-- it returns HTTP 4xx/5xx (each code gets its own message, with the service's message);
-- it returns an empty or non-JSON body;
-- `category` is missing or not one of F0–F9.
-
-The user sees what went wrong, with **Try again** and a link to Settings.
+If `classes` has no F0–F9 code (e.g. only `["fraud"]`), the call is rejected with a clear message, because the alert rules need the category. A `429` (busy) is retried automatically after `Retry-After`, up to 3 times.
 
 ### Notifier (optional): `POST <notifierUrl>`
 

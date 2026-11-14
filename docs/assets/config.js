@@ -1,15 +1,17 @@
 /* Site configuration (the site owner edits this).
-   serviceUrl:   the microservice that receives each uploaded/recorded call (multipart field `audioField`)
-                 and returns the transcript, summary, fraud category (F0–F9) and labels.
-                 Every request carries the signed-in user's token as "Authorization: Bearer <token>";
-                 the service verifies it and answers 401 if it's missing or wrong.
+   serviceUrl:   the microservice that receives each uploaded/recorded call (one multipart field, `audioField`)
+                 and returns {"request_id", "classes": [...], "summary"}. The fraud category is the F0–F9 code
+                 (or category name) among "classes"; every class is shown as a label.
+                 Every request carries the token as "Authorization: Bearer <token>"; the service verifies it (401 if wrong).
    healthUrl:    public liveness URL (no token), used to tell "service down" apart from "blocked by CORS".
-   authCheckUrl: a GET that needs the token (401 if bad), used by Settings → "Test connection & token".
+   authCheckUrl: GET that needs the token (401 if bad), used by Settings → "Test connection & token".
+   maxAudioSeconds: the service's audio length limit (checked before uploading).
    googleClientId: Google OAuth Client ID (Web application) for "Continue with Google". */
 window.CG_CONFIG = {
-  serviceUrl: "https://call-audio-api-c3qg.onrender.com/v1/audio/transcribe",
+  serviceUrl: "https://call-audio-api-c3qg.onrender.com/v1/audio/analyze",
   audioField: "audio",
   healthUrl: "https://call-audio-api-c3qg.onrender.com/healthz",
-  authCheckUrl: "https://call-audio-api-c3qg.onrender.com/health",
+  authCheckUrl: "https://call-audio-api-c3qg.onrender.com/v1/status",
+  maxAudioSeconds: 120,
   googleClientId: "",
 };

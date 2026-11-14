@@ -161,10 +161,11 @@ function normalise(raw) {
     language: pick("language", "lang"),
     token: pick("token", "call_token", "call_id", "id"),
     tokens: pick("tokens", "token_count", "num_tokens"),
-    category: normCategory(pick("category", "label", "family", "class", "prediction", "fraud_type")),
+    category: normCategory(pick("category", "family", "class", "prediction", "fraud_type"))
+      ?? (Array.isArray(raw.classes) ? raw.classes.map((c) => normCategory(c)).find(Boolean) ?? null : null),
     confidence: conf,
     scores: pick("scores", "probabilities"),
-    labels: toLabels(pick("labels", "tags", "call_labels")),
+    labels: toLabels(pick("labels", "tags", "call_labels", "classes")),
   };
 }
 function toLabels(v) {
@@ -174,6 +175,12 @@ function toLabels(v) {
 }
 
 const CFG = Object.assign({ serviceUrl: "", audioField: "audio", healthUrl: "", authCheckUrl: "" }, window.CG_CONFIG || {});
+/** Health + token-check URLs for whichever service URL is in use (config values only for the configured service). */
+function svcUrls(url) {
+  const origin = new URL(url).origin;
+  const same = CFG.serviceUrl && new URL(CFG.serviceUrl).origin === origin;
+  return { origin, health: (same && CFG.healthUrl) || origin + "/healthz", status: (same && CFG.authCheckUrl) || origin + "/v1/status" };
+}
 function authHeaders() {
   const k = String(S.settings.apiKey || "").trim();
   return k ? { Authorization: `Bearer ${k}` } : {};
@@ -194,7 +201,7 @@ async function fetchJSON(url, opts) {
     if (e.name === "AbortError") throw new ServiceError("No response from the microservice.", `It did not answer within ${secs} seconds. It may be overloaded or the audio may be too long. You can raise the timeout in Settings.`);
     if (!navigator.onLine) throw new ServiceError("You're offline.", "Check your internet connection and try again.");
     let up = false;
-    try { await fetch(CFG.healthUrl || new URL("/healthz", url).href, { mode: "no-cors", cache: "no-store" }); up = true; } catch { up = false; }
+    try { await fetch(svcUrls(url).health, { mode: "no-cors", cache: "no-store" }); up = true; } catch { up = false; }
     if (up) throw new ServiceError("The microservice blocked this website (CORS).", `The service at ${new URL(url).origin} is running but doesn't allow requests from ${location.origin}. Its owner must allow this origin in the service's CORS settings, including OPTIONS requests without a token.`);
     throw new ServiceError("Couldn't reach the microservice.", `No response from ${new URL(url).origin}. It may be down or starting up (free hosting can take about a minute to wake). Try again shortly.`);
   } finally { clearTimeout(t); }
@@ -211,12 +218,15 @@ async function fetchJSON(url, opts) {
       413: "The audio file is too large for the microservice (413).",
       415: "The microservice doesn't accept this audio type (415).",
       422: "The microservice couldn't process this audio (422).",
-      429: "Too many requests (429). Wait a moment and try again.",
+      429: "It is processing another recording (429). Try again in a few seconds.",
+      503: "The service isn't ready for this request (503).",
     }[r.status] || (r.status >= 500 ? `The microservice had an internal error (${r.status}). Try again later.` : `It answered with an error (HTTP ${r.status}).`);
     let detail = text, rid = "";
     try { const j = JSON.parse(text); detail = typeof j.detail === "string" ? j.detail : j.message || j.error || JSON.stringify(j.detail || j); rid = j.request_id || ""; } catch { /* plain text */ }
     const msg = (detail ? ` Service says: "${String(detail).replace(/\s+/g, " ").slice(0, 200)}"` : "") + (rid ? ` (request ID ${rid})` : "");
-    throw new ServiceError("The microservice returned an error.", why + msg);
+    const err = new ServiceError(r.status === 429 ? "The microservice is busy." : "The microservice returned an error.", why + msg);
+    err.status = r.status; err.retryAfter = parseInt(r.headers.get("Retry-After") || "0", 10) || 0;
+    throw err;
   }
   if (!text.trim()) throw new ServiceError("Empty response from the microservice.", "It answered but sent no data. Expected JSON with transcript, summary, category and labels.");
   try { return JSON.parse(text); }
@@ -225,21 +235,31 @@ async function fetchJSON(url, opts) {
 
 const services = {
   /** Send the uploaded audio to the microservice. Its JSON reply carries transcript, summary and the fraud category. */
-  async analyse(blob, fileName, token) {
+  async analyse(blob, fileName, token, onWait) {
     if (!blob) throw new ServiceError("No audio.", "Upload an audio file or record a call first.");
     if (!S.settings.transcriberUrl) throw new ServiceError("Microservice not connected.", "Add its URL in Settings → Microservice.");
     if (!String(S.settings.apiKey || "").trim()) throw new ServiceError("API token missing.", "The microservice only accepts requests with your API token. Paste it in Settings → Microservice.");
     const fd = new FormData();
-    fd.append(CFG.audioField || "audio", blob, fileName || "call.webm");
-    fd.append("call_token", token);
-    const raw = await fetchJSON(S.settings.transcriberUrl, { method: "POST", body: fd, headers: authHeaders() });
+    fd.append(CFG.audioField || "audio", blob, fileName || "call.webm");   // exactly one field: the service rejects extras
+    let raw;
+    for (let attempt = 1; ; attempt++) {
+      try { raw = await fetchJSON(S.settings.transcriberUrl, { method: "POST", body: fd, headers: authHeaders() }); break; }
+      catch (e) {
+        if (e.status !== 429 || attempt > 3) throw e;
+        const wait = Math.min(30, Math.max(5, e.retryAfter || 10));
+        onWait && onWait(`Service is busy with another recording. Retrying in ${wait}s (attempt ${attempt + 1} of 4)…`);
+        await sleep(wait * 1000);
+      }
+    }
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new ServiceError("Unreadable response from the microservice.", "Expected a JSON object.");
     const r = normalise(raw); r._raw = raw;
     if (!r.category) {
       const raw = (await Promise.resolve(r._raw)) || {};
-      throw new ServiceError("Incomplete response from the microservice.", raw.category != null
-        ? `It sent category "${String(raw.category).slice(0, 40)}", which isn't one of F0–F9.`
-        : `It didn't send a fraud category. Expected a field like "category": "F0"…"F9".`);
+      const got = raw.category != null ? `category "${String(raw.category).slice(0, 40)}"`
+        : Array.isArray(raw.classes) ? `classes ${JSON.stringify(raw.classes).slice(0, 80)}` : "";
+      throw new ServiceError("Incomplete response from the microservice.", got
+        ? `It sent ${got}, but none of them is a fraud category F0–F9 (e.g. "F3" or "Government impersonation").`
+        : `It didn't send a fraud category. Expected "classes" containing one of F0–F9, or a "category" field.`);
     }
     if (!r.transcript && !r.summary) throw new ServiceError("Incomplete response from the microservice.", "It sent no transcript or summary.");
     return r;
@@ -715,11 +735,14 @@ async function runPipeline(blob, fileName) {
     if (!blob) throw new ServiceError("No audio.", "Upload an audio file or record a call first. Nothing is analysed without audio.");
     if (!blob.size) throw new ServiceError("The audio file is empty.", "Choose a recording that has sound in it.");
     if (blob.type && !/^audio\/|^video\/webm/.test(blob.type) && !/\.(mp3|wav|m4a|ogg|webm|flac|aac)$/i.test(fileName)) throw new ServiceError("That isn't an audio file.", `"${fileName}" is ${blob.type}. Upload MP3, WAV, M4A, OGG, WEBM or FLAC.`);
-    set("upload", "done", `${fileName} · ${(blob.size / 1024).toFixed(0)} KB`);
+    const secs = await audioDuration(blob);
+    const maxSecs = CFG.maxAudioSeconds || 120;
+    if (secs != null && secs > maxSecs + 0.5) throw new ServiceError("Recording is too long.", `It is ${fmtDur(secs)} long. The microservice accepts up to ${fmtDur(maxSecs)}. Trim it and try again.`);
+    set("upload", "done", `${fileName} · ${(blob.size / 1024).toFixed(0)} KB${secs != null ? ` · ${fmtDur(secs)}` : ""}`);
     cur = "transcribe"; set("transcribe", "active", "Sending audio to your microservice…");
-    const tr = await services.analyse(blob, fileName, token);
-    if (tr.duration == null) tr.duration = await audioDuration(blob);
-    set("transcribe", "done", `${(tr.transcript.match(/\S+/g) || []).length} words${tr.summary ? " · summary received" : " · no summary"}`);
+    const tr = await services.analyse(blob, fileName, token, (note) => set("transcribe", "active", note));
+    if (tr.duration == null) tr.duration = secs;
+    set("transcribe", "done", [tr.transcript ? `${(tr.transcript.match(/\S+/g) || []).length} words` : "", tr.summary ? "summary received" : "no summary", tr.labels.length ? `${tr.labels.length} labels` : ""].filter(Boolean).join(" · "));
     cur = "classify";
     const cls = { category: tr.category, confidence: tr.confidence, scores: tr.scores, by: "microservice" };
     set("classify", "done", `${cls.category} · ${CATS[cls.category].name}${cls.confidence != null ? ` (${pct(cls.confidence)})` : ""}`);
@@ -1081,7 +1104,7 @@ VIEWS.settings = (root) => {
       <div class="card card-pad stack">
         <div><h3>Microservice</h3><div class="faint" style="font-size:12.5px;margin-top:2px">Every call is sent here with your API token. The service checks the token, and the fraud category and labels come from its response.</div></div>
         <div class="field"><label for="sTr">Microservice URL</label><input class="input" id="sTr" data-k="transcriberUrl" placeholder="https://your-host/v1/audio/transcribe" value="${esc(st.transcriberUrl)}">
-          <span class="hint">POST multipart <span class="mono">${esc(CFG.audioField)}</span> + <span class="mono">call_token</span>, header <span class="mono">Authorization: Bearer &lt;token&gt;</span>.</span></div>
+          <span class="hint">POST multipart <span class="mono">${esc(CFG.audioField)}</span> (one field only), header <span class="mono">Authorization: Bearer &lt;token&gt;</span>.</span></div>
         <div class="field"><label for="sKey">API token</label><input class="input" id="sKey" type="password" data-k="apiKey" value="${esc(st.apiKey)}" autocomplete="off" spellcheck="false" placeholder="Paste the token issued by the service">
           <span class="hint">Required. Saved only in this browser, for your account. It's sent only to the microservice and never included in backups.</span></div>
         <div class="field"><label for="sNo">Notifier URL (email / push, optional)</label><input class="input" id="sNo" data-k="notifierUrl" placeholder="https://your-host/notify" value="${esc(st.notifierUrl)}">
@@ -1146,8 +1169,7 @@ VIEWS.settings = (root) => {
     const say = (ok, m) => { out.innerHTML = `<span class="status ${ok ? "good" : "critical"}">${icon(ok ? "check" : "alert")}${esc(m)}</span>`; };
     if (!st.transcriberUrl) return say(false, "Set the microservice URL first.");
     out.innerHTML = `<span class="row"><span class="spin"></span>Checking… (a sleeping service can take a minute to wake)</span>`;
-    const origin = new URL(st.transcriberUrl).origin;
-    const health = CFG.healthUrl || origin + "/healthz";
+    const { origin, health, status } = svcUrls(st.transcriberUrl);
     // 1) is it running?
     let reachable = false;
     try { await fetch(health, { mode: "no-cors", cache: "no-store" }); reachable = true; } catch { reachable = false; }
@@ -1158,9 +1180,12 @@ VIEWS.settings = (root) => {
     // 3) is the token accepted? (an authenticated GET; 401 = bad token)
     if (!String(st.apiKey || "").trim()) return say(false, "Service reachable. Now paste your API token.");
     try {
-      const r = await fetch(CFG.authCheckUrl || origin + "/health", { headers: authHeaders(), cache: "no-store" });
+      const r = await fetch(status, { headers: authHeaders(), cache: "no-store" });
       if (r.status === 401 || r.status === 403) return say(false, "Service reachable, but it rejected your API token.");
-      return say(true, r.ok ? "Connected. Token accepted." : `Connected (HTTP ${r.status}). Token not rejected.`);
+      let j = {}; try { j = await r.json(); } catch { /* not JSON */ }
+      if (r.ok && j.classifier_configured === false) return say(false, "Token accepted, but the service's classifier is not configured yet, so calls can't be classified.");
+      if (r.ok && j.model_ready === false) return say(false, "Token accepted, but the speech model is still loading. Try again in a minute.");
+      return say(true, r.ok ? `Connected. Token accepted.${j.max_audio_seconds ? ` Max audio ${j.max_audio_seconds}s.` : ""}` : `Connected (HTTP ${r.status}). Token not rejected.`);
     } catch { return say(false, "Service reachable, but the token check was blocked (CORS on authenticated requests)."); }
   };
   const pd = $("#pickDir"); if (pd) pd.onclick = async () => { try { await folder.connect(); VIEWS.settings(root); } catch (e) { if (e.name !== "AbortError") toast(e.message, "alert"); } };
