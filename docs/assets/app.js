@@ -161,7 +161,13 @@ function normalise(raw) {
     category: normCategory(pick("category", "label", "family", "class", "prediction", "fraud_type")),
     confidence: conf,
     scores: pick("scores", "probabilities"),
+    labels: toLabels(pick("labels", "tags", "call_labels")),
   };
+}
+function toLabels(v) {
+  if (v == null) return [];
+  const arr = Array.isArray(v) ? v : typeof v === "string" ? v.split(/[,|;]/) : typeof v === "object" ? Object.keys(v).filter((k) => v[k]) : [String(v)];
+  return [...new Set(arr.map((x) => String(typeof x === "object" && x ? (x.name || x.label || x.tag || "") : x).trim()).filter(Boolean))].slice(0, 30);
 }
 
 function authHeaders() {
@@ -169,31 +175,63 @@ function authHeaders() {
   return k ? { Authorization: `Bearer ${k}`, "X-API-Key": k } : {};
 }
 
+class ServiceError extends Error {
+  constructor(title, detail) { super(`${title} ${detail}`.trim()); this.title = title; this.detail = detail; }
+}
+
 async function fetchJSON(url, opts) {
   const ctl = new AbortController();
-  const t = setTimeout(() => ctl.abort(), (S.settings.timeoutSec || 120) * 1000);
+  const secs = S.settings.timeoutSec || 120;
+  const t = setTimeout(() => ctl.abort(), secs * 1000);
+  let r;
   try {
-    const r = await fetch(url, { ...opts, signal: ctl.signal });
-    const text = await r.text();
-    if (!r.ok) throw new Error(`HTTP ${r.status}: ${text.slice(0, 160)}`);
-    try { return JSON.parse(text); } catch { return { transcript: text }; }
+    r = await fetch(url, { ...opts, signal: ctl.signal });
   } catch (e) {
-    if (e.name === "AbortError") throw new Error(`Timed out after ${S.settings.timeoutSec}s`);
-    throw e;
+    if (e.name === "AbortError") throw new ServiceError("No response from the microservice.", `It did not answer within ${secs} seconds. It may be overloaded or the audio may be too long. You can raise the timeout in Settings.`);
+    if (!navigator.onLine) throw new ServiceError("You're offline.", "Check your internet connection and try again.");
+    throw new ServiceError("Couldn't reach the microservice.", `No response from ${url}. It may be down, the URL may be wrong, or it doesn't allow requests from this website (CORS).`);
   } finally { clearTimeout(t); }
+  let text = "";
+  try { text = await r.text(); } catch { text = ""; }
+  if (!r.ok) {
+    const why = {
+      400: "It rejected the request (400 Bad Request). The audio format may not be supported.",
+      401: "It rejected the API key (401 Unauthorized). Check the API key in Settings.",
+      403: "Access denied (403 Forbidden). Check the API key in Settings.",
+      404: "The URL was not found (404). Check the microservice URL in Settings.",
+      405: "That URL doesn't accept uploads (405 Method Not Allowed).",
+      408: "The microservice timed out (408).",
+      413: "The audio file is too large for the microservice (413).",
+      415: "The microservice doesn't accept this audio type (415).",
+      422: "The microservice couldn't process this audio (422).",
+      429: "Too many requests (429). Wait a moment and try again.",
+    }[r.status] || (r.status >= 500 ? `The microservice had an internal error (${r.status}). Try again later.` : `It answered with an error (HTTP ${r.status}).`);
+    const msg = text ? ` Message from the service: "${text.replace(/\s+/g, " ").slice(0, 200)}"` : "";
+    throw new ServiceError("The microservice returned an error.", why + msg);
+  }
+  if (!text.trim()) throw new ServiceError("Empty response from the microservice.", "It answered but sent no data. Expected JSON with transcript, summary, category and labels.");
+  try { return JSON.parse(text); }
+  catch { throw new ServiceError("Unreadable response from the microservice.", `Expected JSON but got: "${text.replace(/\s+/g, " ").slice(0, 160)}"`); }
 }
 
 const services = {
   /** Send the uploaded audio to the microservice. Its JSON reply carries transcript, summary and the fraud category. */
   async analyse(blob, fileName, token) {
-    if (!S.settings.transcriberUrl) throw new Error("Your microservice is not connected. Add its URL in Settings → Microservice.");
-    if (!blob) throw new Error("Upload or record a call first.");
+    if (!blob) throw new ServiceError("No audio.", "Upload an audio file or record a call first.");
+    if (!S.settings.transcriberUrl) throw new ServiceError("Microservice not connected.", "Add its URL in Settings → Microservice.");
     const fd = new FormData();
     fd.append("file", blob, fileName || "call.webm");
     fd.append("call_token", token);
-    const r = normalise(await fetchJSON(S.settings.transcriberUrl, { method: "POST", body: fd, headers: authHeaders() }));
-    if (!r.transcript && !r.summary) throw new Error("The microservice returned no transcript or summary.");
-    if (!r.category) throw new Error("The microservice response has no fraud category. Expected a field like \"category\": \"F0\"…\"F9\".");
+    const raw = await fetchJSON(S.settings.transcriberUrl, { method: "POST", body: fd, headers: authHeaders() });
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new ServiceError("Unreadable response from the microservice.", "Expected a JSON object.");
+    const r = normalise(raw); r._raw = raw;
+    if (!r.category) {
+      const raw = (await Promise.resolve(r._raw)) || {};
+      throw new ServiceError("Incomplete response from the microservice.", raw.category != null
+        ? `It sent category "${String(raw.category).slice(0, 40)}", which isn't one of F0–F9.`
+        : `It didn't send a fraud category. Expected a field like "category": "F0"…"F9".`);
+    }
+    if (!r.transcript && !r.summary) throw new ServiceError("Incomplete response from the microservice.", "It sent no transcript or summary.");
     return r;
   },
   async notify(n, rec) {
@@ -210,25 +248,6 @@ const services = {
 };
 
 /* ============================== labels + routing ============================== */
-function autoLabels(rec) {
-  const t = `${rec.transcript} ${rec.summary}`.toLowerCase();
-  const L = [rec.category, rec.isFraud ? "fraud" : "safe", `${rec.risk}-risk`];
-  if (rec.isBanking) L.push("banking");
-  if (rec.confidence != null && rec.confidence < 0.6) L.push("needs-review");
-  const rules = [
-    ["otp-request", /\b(otp|one[- ]time code|verification code|login code)\b/],
-    ["money-request", /(\$\s?\d|\bpay\b|send (the )?money|transfer|bail|fee\b|deposit)/],
-    ["urgency", /(urgent|hurry|right now|immediately|within the hour|today|quickly|before the)/],
-    ["threat", /(arrest|warrant|police|locked|deleted|send the video|or else)/],
-    ["gift-card", /gift ?cards?/],
-    ["crypto", /(bitcoin|crypto|usdt|btc|wallet)/],
-    ["remote-access", /(anydesk|teamviewer|remote access|download .* app)/],
-    ["secrecy", /(don't tell|do not tell|keep (this|it) secret|don't hang up|do not hang up)/],
-  ];
-  for (const [lab, rx] of rules) if (rx.test(t)) L.push(lab);
-  return [...new Set(L)];
-}
-
 function warningText(rec) {
   const c = CATS[rec.category];
   return [
@@ -306,9 +325,8 @@ function buildRecord({ token, createdAt, fileName, audioType, tr, cls, source })
     serviceToken: tr.token && tr.token !== token ? String(tr.token) : "",
     category: code, categoryName: c.name, isFraud: code !== "F0", isBanking: !!c.banking, risk: c.risk,
     confidence: cls.confidence != null ? Number(cls.confidence) : null, scores: cls.scores || null, classifiedBy: cls.by,
-    source, labels: [], userLabels: [], notifications: [], reviewed: false, hasAudio: false,
+    source, labels: tr.labels || [], userLabels: [], notifications: [], reviewed: false, hasAudio: false,
   };
-  rec.labels = autoLabels(rec);
   return rec;
 }
 
@@ -367,7 +385,7 @@ function toCSV(rows) {
   const q = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
   return [cols.join(","), ...rows.map((r) => [r.token, localDate(r.createdAt), localTime(r.createdAt), r.category, r.categoryName,
     r.isFraud ? "fraud" : "not fraud", r.risk, r.confidence ?? "", r.duration ?? "", r.tokens ?? "",
-    [...r.labels, ...r.userLabels].join("|"), r.notifications.filter((n) => ["sent", "delivered", "queued"].includes(n.status)).length, r.summary].map(q).join(","))].join("\n");
+    r.labels.join("|"), r.notifications.filter((n) => ["sent", "delivered", "queued"].includes(n.status)).length, r.summary].map(q).join(","))].join("\n");
 }
 
 function download(name, text, type = "text/plain") {
@@ -384,10 +402,9 @@ const verdictBadge = (rec) => rec.isFraud
   ? `<span class="status critical">${icon("alert")}Fraud</span>`
   : `<span class="status good">${icon("shield")}Not fraud</span>`;
 const catChip = (code) => `<span class="chip chip-cat ${code === "F0" ? "safe" : ""}" title="${esc(CATS[code].name)}"><b>${code}</b> ${esc(CATS[code].name)}</span>`;
-const labelChips = (rec, removable = false) => [
-  ...rec.labels.map((l) => `<span class="chip chip-label">${esc(l)}</span>`),
-  ...rec.userLabels.map((l) => `<span class="chip chip-user">${icon("tag")}${esc(l)}${removable ? `<span class="x" data-rmlabel="${esc(l)}" title="Remove">${icon("x")}</span>` : ""}</span>`),
-].join("");
+const labelChips = (rec) => rec.labels.length
+  ? rec.labels.map((l) => `<span class="chip chip-label">${icon("tag")}${esc(l)}</span>`).join("")
+  : `<span class="faint">No labels from the microservice.</span>`;
 const confBar = (c) => c == null ? `<span class="faint">–</span>` : `<span class="conf"><span class="bar"><span style="width:${Math.round(c * 100)}%"></span></span><span class="mono">${pct(c)}</span></span>`;
 const alertCount = (rec) => rec.notifications.filter((n) => ["sent", "delivered", "queued"].includes(n.status)).length;
 
@@ -607,7 +624,7 @@ VIEWS.analyze = (root) => {
           </div>
           <div id="filePill" style="margin-top:14px"></div>
           <div class="row" style="margin-top:16px">
-            <button class="btn btn-primary" id="analyzeBtn" disabled>${icon("wave")}Analyze call</button>
+            <button class="btn btn-primary" id="analyzeBtn">${icon("wave")}Analyze call</button>
           </div>
         </div>
         <div id="resultBox"></div>
@@ -621,7 +638,6 @@ VIEWS.analyze = (root) => {
 
   const setPending = (blob, name) => {
     S.pending = blob ? { blob, name } : null;
-    $("#analyzeBtn").disabled = !blob;
     if (!blob) { $("#filePill").innerHTML = ""; return; }
     const url = URL.createObjectURL(blob);
     $("#filePill").innerHTML = `<div class="file-pill"><span class="k-icon" style="width:34px;height:34px;border-radius:10px;display:inline-flex;align-items:center;justify-content:center;background:var(--primary-soft);color:var(--primary-600)">${icon("wave")}</span>
@@ -661,7 +677,7 @@ VIEWS.analyze = (root) => {
     } catch (e) { toast("Microphone not available: " + e.message, "alert"); }
   };
 
-  $("#analyzeBtn").onclick = () => S.pending && runPipeline(S.pending.blob, S.pending.name);
+  $("#analyzeBtn").onclick = () => runPipeline(S.pending?.blob || null, S.pending?.name || "");
 };
 
 const STEPS = [
@@ -686,7 +702,9 @@ async function runPipeline(blob, fileName) {
   const token = makeToken(new Date(createdAt));
   let cur = "upload";
   try {
-    if (!blob) throw new Error("Upload or record a call first.");
+    if (!blob) throw new ServiceError("No audio.", "Upload an audio file or record a call first. Nothing is analysed without audio.");
+    if (!blob.size) throw new ServiceError("The audio file is empty.", "Choose a recording that has sound in it.");
+    if (blob.type && !/^audio\/|^video\/webm/.test(blob.type) && !/\.(mp3|wav|m4a|ogg|webm|flac|aac)$/i.test(fileName)) throw new ServiceError("That isn't an audio file.", `"${fileName}" is ${blob.type}. Upload MP3, WAV, M4A, OGG, WEBM or FLAC.`);
     set("upload", "done", `${fileName} · ${(blob.size / 1024).toFixed(0)} KB`);
     cur = "transcribe"; set("transcribe", "active", "Sending audio to your microservice…");
     const tr = await services.analyse(blob, fileName, token);
@@ -710,9 +728,17 @@ async function runPipeline(blob, fileName) {
     S.pending = null;
     toast(rec.isFraud ? `Fraud detected: ${rec.categoryName}` : "Call looks safe", rec.isFraud ? "alert" : "shield");
   } catch (e) {
-    set(cur, "error", e.message);
-    $("#resultBox").innerHTML = `<div class="banner warn">${icon("alert")}<div><b>Analysis stopped.</b> ${esc(e.message)}</div></div>`;
-  } finally { if (btn) btn.disabled = !S.pending; }
+    const title = e.title || "Analysis stopped.", detail = e.detail ?? e.message;
+    set(cur, "error", title);
+    const canRetry = !!blob && cur !== "upload";
+    $("#resultBox").innerHTML = `<div class="card card-pad err-card" role="alert">
+      <div class="row" style="align-items:flex-start;gap:14px"><span class="v-icon err-icon">${icon("alert")}</span>
+        <div style="flex:1;min-width:0"><h3>${esc(title)}</h3><div class="muted" style="margin-top:4px">${esc(detail)}</div>
+          <div class="faint" style="font-size:12px;margin-top:8px">No result was saved and no alerts were sent.</div>
+          <div class="row" style="margin-top:12px">${canRetry ? `<button class="btn btn-primary btn-sm" id="retryBtn">Try again</button>` : ""}
+            ${/connected|URL|API key|CORS|timeout/i.test(detail + title) ? `<a class="btn btn-sm" href="#/settings">Open Settings</a>` : ""}</div></div></div></div>`;
+    const rb = $("#retryBtn"); if (rb) rb.onclick = () => runPipeline(blob, fileName);
+  } finally { if (btn) btn.disabled = false; }
 }
 
 function audioDuration(blob) {
@@ -789,10 +815,10 @@ function applyFilters(F) {
     if (F.verdict === "safe" && c.isFraud) return false;
     if (F.verdict === "banking" && !c.isBanking) return false;
     if (F.risk !== "all" && c.risk !== F.risk) return false;
-    if (F.label && ![...c.labels, ...c.userLabels].includes(F.label)) return false;
+    if (F.label && !c.labels.includes(F.label)) return false;
     if (F.alerts === "alerted" && !alertCount(c)) return false;
     if (F.alerts === "problem" && !c.notifications.some((n) => ["failed", "skipped", "queued"].includes(n.status))) return false;
-    if (q && !`${c.token} ${c.summary} ${c.transcript} ${c.categoryName} ${c.fileName} ${c.labels.join(" ")} ${c.userLabels.join(" ")}`.toLowerCase().includes(q)) return false;
+    if (q && !`${c.token} ${c.summary} ${c.transcript} ${c.categoryName} ${c.fileName} ${c.labels.join(" ")}`.toLowerCase().includes(q)) return false;
     return true;
   });
   const by = { new: (a, b) => b.createdAt.localeCompare(a.createdAt), old: (a, b) => a.createdAt.localeCompare(b.createdAt),
@@ -802,7 +828,7 @@ function applyFilters(F) {
 
 VIEWS.history = (root) => {
   const F = S.filters = { ...defaultFilters(), ...(S.filters || {}) };
-  const allLabels = [...new Set(S.calls.flatMap((c) => [...c.labels, ...c.userLabels]))].sort();
+  const allLabels = [...new Set(S.calls.flatMap((c) => c.labels))].sort();
   root.innerHTML = `
     <div class="card">
       <div class="filters">
@@ -851,8 +877,8 @@ VIEWS.history = (root) => {
       <td class="nowrap">${fmtDate(c.createdAt)}</td><td class="mono">${localTime(c.createdAt)}</td>
       <td class="mono nowrap">${esc(c.token)}</td><td>${catChip(c.category)}</td><td>${verdictBadge(c)}</td><td>${riskBadge(c.risk)}</td>
       <td style="min-width:120px">${confBar(c.confidence)}</td>
-      <td>${(() => { const ls = [...c.userLabels, ...c.labels.filter((l) => !CODES.includes(l) && !["fraud", "safe"].includes(l) && !l.endsWith("-risk"))];
-        return `<div class="labels">${ls.slice(0, 2).map((l) => `<span class="chip ${c.userLabels.includes(l) ? "chip-user" : "chip-label"}">${esc(l)}</span>`).join("")}${ls.length > 2 ? `<span class="chip" title="${esc(ls.slice(2).join(", "))}">+${ls.length - 2}</span>` : ""}</div>`; })()}</td>
+      <td>${(() => { const ls = c.labels;
+        return ls.length ? `<div class="labels">${ls.slice(0, 2).map((l) => `<span class="chip chip-label">${esc(l)}</span>`).join("")}${ls.length > 2 ? `<span class="chip" title="${esc(ls.slice(2).join(", "))}">+${ls.length - 2}</span>` : ""}</div>` : `<span class="faint">–</span>`; })()}</td>
       <td class="num">${alertCount(c) || `<span class="faint">0</span>`}</td></tr>`).join("")
       : `<tr><td colspan="9"><div class="empty">${icon("clock")}<div>${S.calls.length ? "No calls match these filters." : "No calls yet. Analyse one to start your history."}</div></div></td></tr>`;
     $$("#rows [data-open]").forEach((tr) => tr.onclick = () => openDrawer(tr.dataset.open));
@@ -898,8 +924,8 @@ async function openDrawer(id) {
         <div class="card card-pad"><div class="lbl" style="margin-bottom:6px">Summary</div><div class="summary">${esc(rec.summary || "No summary returned.")}</div>
           <div class="lbl" style="margin:14px 0 6px">Transcript</div><div class="quote">${esc(rec.transcript || "No transcript.")}</div></div>
         <div class="card card-pad"><div class="lbl" style="margin-bottom:8px">Labels</div>
-          <div class="row" style="gap:6px">${labelChips(rec, true)}</div>
-          <form class="row" id="labelForm" style="margin-top:12px"><input class="input" id="labelInput" placeholder="Add a label, e.g. reported-to-police" maxlength="40" style="flex:1"><button class="btn btn-soft">${icon("tag")}Add</button></form></div>
+          <div class="row" style="gap:6px">${labelChips(rec)}</div>
+          <div class="faint" style="font-size:12px;margin-top:8px">Labels come from the microservice.</div></div>
         <div class="card card-pad"><div class="row"><div class="lbl">Alerts</div><div class="spacer"></div>${rec.isFraud ? `<button class="btn btn-sm" id="reroute">Re-run routing</button>` : ""}</div>
           ${rec.notifications.length ? rec.notifications.map((n) => notifRow(n, rec)).join("") : `<div class="faint" style="margin-top:6px">No alerts for this call.</div>`}</div>
         <div class="card card-pad"><div class="lbl" style="margin-bottom:8px">Review</div>
@@ -909,9 +935,7 @@ async function openDrawer(id) {
           <button class="btn btn-sm btn-ghost btn-danger" id="delCall">${icon("trash")}Delete</button></div></div>
       </div>`;
     $("#drClose").onclick = close;
-    $("#labelForm").onsubmit = async (e) => { e.preventDefault(); const v = $("#labelInput").value.trim().toLowerCase().replace(/\s+/g, "-"); if (v && !rec.userLabels.includes(v)) { rec.userLabels.push(v); await saveRecord(rec); } paint(); };
-    $$("[data-rmlabel]", dr).forEach((x) => x.onclick = async () => { rec.userLabels = rec.userLabels.filter((l) => l !== x.dataset.rmlabel); await saveRecord(rec); paint(); });
-    $("#markReviewed").onclick = async () => { rec.reviewed = !rec.reviewed; if (rec.reviewed) rec.userLabels = [...new Set([...rec.userLabels, "reviewed"])]; else rec.userLabels = rec.userLabels.filter((l) => l !== "reviewed"); await saveRecord(rec); paint(); };
+    $("#markReviewed").onclick = async () => { rec.reviewed = !rec.reviewed; await saveRecord(rec); paint(); };
     const rr = $("#reroute"); if (rr) rr.onclick = async () => {
       const plan = planAlerts(rec);
       if (!await modal({ title: "Re-run alert routing?", body: `This uses your current contacts and adds ${plan.length} alert${plan.length === 1 ? "" : "s"}:<br>${plan.map((n) => `· ${esc(n.role)} ${esc(n.to || n.reason || "")}`).join("<br>")}`, confirm: "Send", cancel: "Cancel" })) return;

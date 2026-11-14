@@ -46,7 +46,7 @@ Nobody sees the dashboard without logging in.
 ## Features
 
 - **Analyze:** upload a file (MP3/WAV/M4A/OGG/WEBM/FLAC) or record from the mic. A five-step pipeline view shows what happened.
-- **Every call gets:** date, unique token (`CG-YYYYMMDD-XXXXXX`), summary, transcript, duration, word/token count, category, confidence, risk, and auto labels (`otp-request`, `money-request`, `urgency`, `threat`, `gift-card`, `crypto`, `remote-access`, `secrecy`, `banking`, `needs-review`, …) plus your own labels.
+- **Every call gets:** date, unique token (`CG-YYYYMMDD-XXXXXX`), and from the microservice: summary, transcript, category, confidence and labels.
 - **History:** filter by text, date range, time-of-day range (overnight ranges work), fraud type, verdict, risk, label and alert status. Sort, and export the filtered list as CSV or JSON.
 - **History folder on your computer** (Chrome/Edge): mirrors every call to `CallGuard-History/<date>/<time_type_token>/` with `call.json`, `summary.txt`, `transcript.txt`, the audio, and an `index.csv`.
 - **Call detail drawer:** audio playback, transcript, labels, alert log, mark reviewed, delete.
@@ -70,7 +70,7 @@ Set the URL in `docs/assets/config.js` (`serviceUrl`) so every user gets it, or 
 | `file` | the uploaded or recorded audio |
 | `call_token` | CallGuard's token for this call |
 
-Response JSON. `category` is **required**, plus `transcript` or `summary`:
+Response JSON. `category` is **required**, plus `transcript` or `summary`. `labels` are shown exactly as sent (users never add labels):
 
 ```json
 {
@@ -78,13 +78,28 @@ Response JSON. `category` is **required**, plus `transcript` or `summary`:
   "summary": "Caller pretends to be the bank and asks for the OTP.",
   "category": "F1",
   "confidence": 0.91,
+  "labels": ["otp-request", "bank-impersonation", "urgent"],
   "duration": 112,
   "language": "en",
   "tokens": 154
 }
 ```
 
-`category` may be `"F3"`, `3`, or the category name. If it is missing, the call is rejected with a clear error.
+`category` may be `"F3"`, `3`, or the category name. `labels` may be an array or a comma-separated string.
+
+### Errors shown to the user
+
+Nothing is saved and no alerts are sent when:
+
+- no audio was chosen (or the file is empty, or isn't audio);
+- the microservice URL isn't set;
+- the microservice can't be reached (down, wrong URL, or CORS);
+- it doesn't answer before the timeout;
+- it returns HTTP 4xx/5xx (each code gets its own message, with the service's message);
+- it returns an empty or non-JSON body;
+- `category` is missing or not one of F0–F9.
+
+The user sees what went wrong, with **Try again** and a link to Settings.
 
 ### Notifier (optional): `POST <notifierUrl>`
 
