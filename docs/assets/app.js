@@ -759,27 +759,56 @@ VIEWS.analyze = (root) => {
   dz.ondragleave = () => dz.classList.remove("over");
   dz.ondrop = (e) => { e.preventDefault(); dz.classList.remove("over"); const f = e.dataTransfer.files[0]; if (f) setPending(f, f.name); };
 
-  let rec = null, chunks = [], t0 = 0, timer = null;
-  $("#recBtn").onclick = async () => {
-    if (rec && rec.state === "recording") { rec.stop(); return; }
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      chunks = []; rec = new MediaRecorder(stream);
-      rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
-      rec.onstop = () => {
-        stream.getTracks().forEach((t) => t.stop()); clearInterval(timer);
-        const blob = new Blob(chunks, { type: rec.mimeType || "audio/webm" });
-        setPending(blob, `recording-${localDate(new Date())}-${localTime(new Date()).replace(":", "")}.${folder.ext(blob.type)}`);
-        $("#recBtn").innerHTML = `${icon("mic")}Record again`; $("#recState").textContent = "Recording ready.";
-      };
-      rec.start(); t0 = Date.now();
-      $("#recBtn").innerHTML = `${icon("x")}Stop`;
-      timer = setInterval(() => { $("#recState").innerHTML = `<span class="row"><span class="rec-dot"></span>Recording ${fmtDur((Date.now() - t0) / 1000)}</span>`; }, 250);
-    } catch (e) { toast("Microphone not available: " + e.message, "alert"); }
-  };
+  recorder.onReady = (blob, name) => setPending(blob, name);
+  $("#recBtn").onclick = () => (recorder.active() ? recorder.stop() : recorder.start());
+  if (recorder.active()) $("#srcSeg [data-s=record]").click();
+  recorder.paint();
 
   $("#analyzeBtn").onclick = () => runPipeline(S.pending?.blob || null, S.pending?.name || "");
 };
+
+/* ---------- microphone recorder: lives outside the page, so switching pages never stops it ---------- */
+const recorder = {
+  rec: null, stream: null, chunks: [], t0: 0, timer: null, onReady: null,
+  active() { return !!(this.rec && this.rec.state === "recording"); },
+  async start() {
+    try {
+      this.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (e) { toast("Microphone not available: " + e.message, "alert"); return; }
+    this.chunks = []; this.rec = new MediaRecorder(this.stream);
+    this.rec.ondataavailable = (e) => e.data.size && this.chunks.push(e.data);
+    this.rec.onstop = () => {
+      this.stream.getTracks().forEach((t) => t.stop()); clearInterval(this.timer);
+      const blob = new Blob(this.chunks, { type: this.rec.mimeType || "audio/webm" });
+      const name = `recording-${localDate(new Date())}-${localTime(new Date()).replace(":", "")}.${folder.ext(blob.type)}`;
+      S.pending = { blob, name }; idb.kvSet("pending", S.pending).catch(() => {});
+      if ($("#filePill") && this.onReady) this.onReady(blob, name);
+      this.rec = null; this.paint();
+      toast(`Recording saved (${fmtDur((Date.now() - this.t0) / 1000)}). Ready to analyse.`, "check");
+    };
+    this.rec.start(1000); this.t0 = Date.now();          // 1 s chunks: nothing lost if the page is busy
+    this.timer = setInterval(() => this.paint(), 250);
+    this.paint();
+  },
+  stop() { if (this.active()) this.rec.stop(); },
+  /** Update the Analyze page controls (if shown) and the bar that's visible on every page. */
+  paint() {
+    const on = this.active(), t = on ? fmtDur((Date.now() - this.t0) / 1000) : "";
+    const btn = $("#recBtn"), st = $("#recState");
+    if (btn) btn.innerHTML = on ? `${icon("x")}Stop recording` : `${icon("mic")}${S.pending && /^recording-/.test(S.pending.name) ? "Record again" : "Start recording"}`;
+    if (st) st.innerHTML = on ? `<span class="row"><span class="rec-dot"></span>Recording ${t}. Keeps going if you switch pages.</span>`
+      : (S.pending && /^recording-/.test(S.pending.name) ? "Recording ready." : "Uses your microphone. Nothing is sent until you click Analyze.");
+    let bar = $("#recBar");
+    if (!on) { if (bar) bar.remove(); return; }
+    if (!bar) {
+      bar = document.createElement("div"); bar.id = "recBar"; bar.className = "rec-bar"; bar.setAttribute("role", "status");
+      document.body.appendChild(bar);
+    }
+    bar.innerHTML = `<span class="rec-dot"></span><b>Recording ${t}</b><a href="#/analyze">Open</a><button type="button" id="recBarStop">${icon("x")}Stop</button>`;
+    $("#recBarStop").onclick = () => this.stop();
+  },
+};
+window.addEventListener("beforeunload", (e) => { if (recorder.active()) { e.preventDefault(); e.returnValue = ""; } });
 
 /** Re-draw the current/last analysis (progress, result or error) into whatever Analyze page is showing. */
 function renderRun() {
