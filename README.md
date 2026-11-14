@@ -62,7 +62,7 @@ Data stays in the user's browser (IndexedDB plus the optional local folder). Not
 
 The fraud category and labels always come from **your microservice**. The dashboard never guesses or simulates them.
 
-**Default service:** `https://call-audio-api-c3qg.onrender.com/v1/audio/analyze` (set in `docs/assets/config.js`).
+**Default service:** `https://130-131-50-1.sslip.io/v1/audio/analyze` (set in `docs/assets/config.js`).
 
 ### Per-user verification (Supabase sign-in)
 

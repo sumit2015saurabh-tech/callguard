@@ -8,11 +8,13 @@
    maxAudioSeconds: the service's audio length limit (checked before uploading).
    googleClientId: Google OAuth Client ID (Web application) for "Continue with Google". */
 window.CG_CONFIG = {
-  serviceUrl: "https://call-audio-api-c3qg.onrender.com/v1/audio/analyze",
+  serviceUrl: "https://130-131-50-1.sslip.io/v1/audio/analyze",
   audioField: "audio",
-  healthUrl: "https://call-audio-api-c3qg.onrender.com/healthz",
-  authCheckUrl: "https://call-audio-api-c3qg.onrender.com/v1/status",
+  healthUrl: "https://130-131-50-1.sslip.io/healthz",
+  authCheckUrl: "https://130-131-50-1.sslip.io/v1/status",
   maxAudioSeconds: 120,
+  // Old service addresses: a user's saved URL that starts with one of these moves to serviceUrl.
+  retiredServiceUrls: ["https://call-audio-api-c3qg.onrender.com"],
   googleClientId: "",
   // Per-user sign-in (Supabase → Project Settings → API). Both empty = accounts stay in the browser.
   supabaseUrl: "",

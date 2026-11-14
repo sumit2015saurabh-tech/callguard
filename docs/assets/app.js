@@ -1577,7 +1577,8 @@ function authScreen(mode = "login", note = "") {
 async function startApp(user, fresh = false) {
   S.user = user; NS = user.ns || user.id;
   S.settings = { ...DEFAULT_SETTINGS, ...LS.get("settings", {}) };
-  if (!S.settings.transcriberUrl && CFG.serviceUrl) S.settings.transcriberUrl = CFG.serviceUrl;
+  const retired = (CFG.retiredServiceUrls || []).some((u) => String(S.settings.transcriberUrl || "").startsWith(u));
+  if ((!S.settings.transcriberUrl || retired) && CFG.serviceUrl) { S.settings.transcriberUrl = CFG.serviceUrl; if (retired) saveSettings(); }
   if ((S.settings.timeoutSec || 0) < 300) S.settings.timeoutSec = 300;   // transcription + cold start can be slow
   S.contacts = { ...JSON.parse(JSON.stringify(DEFAULT_CONTACTS)), ...LS.get("contacts", {}) };
   if (!S.contacts.user.name && !S.contacts.user.email) { S.contacts.user = { name: user.name, email: user.email, phone: "" }; saveContacts(); }
