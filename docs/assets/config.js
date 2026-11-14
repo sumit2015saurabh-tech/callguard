@@ -16,6 +16,8 @@ window.CG_CONFIG = {
   // Old service addresses: a user's saved URL that starts with one of these moves to serviceUrl.
   retiredServiceUrls: ["https://call-audio-api-c3qg.onrender.com"],
   googleClientId: "",
+  // Accounts on the CallGuard server (user ID + password -> automatic session token). "" = browser-only accounts.
+  accountsUrl: "https://130-131-50-1.sslip.io",
   // Per-user sign-in (Supabase → Project Settings → API). Both empty = accounts stay in the browser.
   supabaseUrl: "",
   supabaseAnonKey: "",

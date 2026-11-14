@@ -728,12 +728,14 @@ VIEWS.analyze = (root) => {
       <div class="card card-pad" style="align-self:start">
         <h3 style="margin-bottom:6px">2. Pipeline</h3>
         <div class="faint" style="font-size:12.5px;margin-bottom:8px">${live ? `Microservice: <span class="mono">${esc(S.settings.transcriberUrl)}</span>` : "Microservice not connected"}</div>
-        <ol class="steps" id="steps">${stepItems()}</ol>
+        <ol class="steps" id="steps">${stepItems(S.run ? S.run.state : {})}</ol>
       </div>
     </div>`;
 
-  const setPending = (blob, name) => {
+  const setPending = (blob, name, fresh = true) => {
     S.pending = blob ? { blob, name } : null;
+    if (fresh) { if (!S.run || !S.run.running) S.run = null; renderRun(); }          // a new file clears the old result
+    idb.kvSet("pending", S.pending).catch(() => {});                                  // survives reloads and tab switches
     if (!blob) { $("#filePill").innerHTML = ""; return; }
     const url = URL.createObjectURL(blob);
     $("#filePill").innerHTML = `<div class="file-pill"><span class="k-icon" style="width:34px;height:34px;border-radius:10px;display:inline-flex;align-items:center;justify-content:center;background:var(--primary-soft);color:var(--primary-600)">${icon("wave")}</span>
@@ -741,7 +743,9 @@ VIEWS.analyze = (root) => {
       <audio controls src="${url}"></audio><button class="icon-btn" id="clearFile" aria-label="Remove file">${icon("x")}</button></div>`;
     $("#clearFile").onclick = () => setPending(null);
   };
-  if (S.pending) setPending(S.pending.blob, S.pending.name);
+  if (S.pending) setPending(S.pending.blob, S.pending.name, false);
+  else idb.kvGet("pending").then((p) => { if (p && p.blob && !S.pending && $("#filePill")) setPending(p.blob, p.name, false); }).catch(() => {});
+  renderRun();
 
   $("#srcSeg").onclick = (e) => {
     const b = e.target.closest("button"); if (!b) return;
@@ -776,6 +780,27 @@ VIEWS.analyze = (root) => {
   $("#analyzeBtn").onclick = () => runPipeline(S.pending?.blob || null, S.pending?.name || "");
 };
 
+/** Re-draw the current/last analysis (progress, result or error) into whatever Analyze page is showing. */
+function renderRun() {
+  const box = $("#resultBox"), steps = $("#steps"), btn = $("#analyzeBtn");
+  if (!box) return;
+  const r = S.run;
+  if (steps) steps.innerHTML = stepItems(r ? r.state : {});
+  if (btn) { btn.disabled = !!(r && r.running); btn.innerHTML = r && r.running ? `<span class="spin"></span> Analysing… (you can switch pages)` : `${icon("wave")}Analyze call`; }
+  if (!r || r.running) { box.innerHTML = ""; return; }
+  if (r.rec) { box.innerHTML = resultCard(r.rec); bindResult(box, r.rec); return; }
+  if (r.error) {
+    const { title, detail, canRetry } = r.error;
+    box.innerHTML = `<div class="card card-pad err-card" role="alert">
+      <div class="row" style="align-items:flex-start;gap:14px"><span class="v-icon err-icon">${icon("alert")}</span>
+        <div style="flex:1;min-width:0"><h3>${esc(title)}</h3><div class="muted" style="margin-top:4px">${esc(detail)}</div>
+          <div class="faint" style="font-size:12px;margin-top:8px">No result was saved and no alerts were sent.</div>
+          <div class="row" style="margin-top:12px">${canRetry ? `<button class="btn btn-primary btn-sm" id="retryBtn">Try again</button>` : ""}
+            ${/connected|URL|token|CORS|timeout|sign-in/i.test(detail + title) ? `<a class="btn btn-sm" href="#/settings">Open Settings</a>` : ""}</div></div></div></div>`;
+    const rb = $("#retryBtn"); if (rb) rb.onclick = () => runPipeline(r.blob, r.fileName);
+  }
+}
+
 const STEPS = [
   ["upload", "Receive audio", "Audio file or recording"],
   ["transcribe", "Microservice", "Transcript, summary + category"],
@@ -790,10 +815,11 @@ const stepItems = (state = {}) => STEPS.map(([k, t, sub], i) => {
 }).join("");
 
 async function runPipeline(blob, fileName) {
+  if (S.run && S.run.running) { toast("An analysis is already running. It continues while you switch pages.", "alert"); return; }
   const state = {};
+  S.run = { state, running: true, blob, fileName };
   const set = (k, st, note) => { state[k] = { st, note }; const el = $("#steps"); if (el) el.innerHTML = stepItems(state); };
-  const btn = $("#analyzeBtn"); if (btn) btn.disabled = true;
-  $("#resultBox").innerHTML = "";
+  renderRun();
   const createdAt = new Date().toISOString();
   const token = makeToken(new Date(createdAt));
   let cur = "upload";
@@ -822,22 +848,15 @@ async function runPipeline(blob, fileName) {
     await saveRecord(rec, null);
     const n = alertCount(rec);
     set("alert", "done", rec.isFraud ? `${n} alert${n === 1 ? "" : "s"} ${S.settings.notifierUrl ? "sent" : "in outbox"}` : "Not fraud: no alerts needed");
-    $("#resultBox").innerHTML = resultCard(rec);
-    bindResult($("#resultBox"), rec);
-    S.pending = null;
+    S.run.rec = rec;
+    S.pending = null; idb.kvSet("pending", null).catch(() => {});
+    if ($("#filePill")) $("#filePill").innerHTML = "";
     toast(rec.isFraud ? `Fraud detected: ${rec.categoryName}` : "Call looks safe", rec.isFraud ? "alert" : "shield");
   } catch (e) {
     const title = e.title || "Analysis stopped.", detail = e.detail ?? e.message;
     set(cur, "error", title);
-    const canRetry = !!blob && cur !== "upload";
-    $("#resultBox").innerHTML = `<div class="card card-pad err-card" role="alert">
-      <div class="row" style="align-items:flex-start;gap:14px"><span class="v-icon err-icon">${icon("alert")}</span>
-        <div style="flex:1;min-width:0"><h3>${esc(title)}</h3><div class="muted" style="margin-top:4px">${esc(detail)}</div>
-          <div class="faint" style="font-size:12px;margin-top:8px">No result was saved and no alerts were sent.</div>
-          <div class="row" style="margin-top:12px">${canRetry ? `<button class="btn btn-primary btn-sm" id="retryBtn">Try again</button>` : ""}
-            ${/connected|URL|token|CORS|timeout/i.test(detail + title) ? `<a class="btn btn-sm" href="#/settings">Open Settings</a>` : ""}</div></div></div></div>`;
-    const rb = $("#retryBtn"); if (rb) rb.onclick = () => runPipeline(blob, fileName);
-  } finally { if (btn) btn.disabled = false; }
+    S.run.error = { title, detail, canRetry: !!blob && cur !== "upload" };
+  } finally { S.run.running = false; renderRun(); }
 }
 
 function audioDuration(blob) {
@@ -1186,7 +1205,7 @@ VIEWS.settings = (root) => {
             <div><h3>${esc(S.user.name)}</h3><div class="faint" style="font-size:12.5px">@${esc(S.user.id)}${S.user.email ? ` · ${esc(S.user.email)}` : ""} · member since ${fmtDate(S.user.createdAt)}</div></div>
             <div class="spacer"></div><button class="btn btn-sm" id="logout2">${icon("logout")}Log out</button></div>
           ${S.user.googleSub ? `<div class="row faint" style="font-size:12.5px">${GOOGLE_G} Signed in with Google${S.user.hash ? " · password also set" : ""}</div>` : ""}
-          ${cloud.on ? `<div class="row faint" style="font-size:12.5px">${icon("shield")} Account stored securely on the sign-in server · works on any device</div>` : ""}
+          ${cloud.on ? `<div class="row faint" style="font-size:12.5px">${icon("shield")} Account stored securely on the CallGuard server · works on any device · you're verified automatically on every call</div>` : ""}
           <form class="form-grid" id="pwForm" style="grid-template-columns:${S.user.hash ? "1fr 1fr auto" : "1fr auto"};align-items:end">
             ${S.user.hash ? `<div class="field"><label for="pwCur">Current password</label><input class="input" id="pwCur" type="password" autocomplete="current-password" required></div>` : ""}
             <div class="field"><label for="pwNew">${S.user.hash || cloud.on ? "New password" : "Set a password (to also log in with your user ID)"}</label><input class="input" id="pwNew" type="password" autocomplete="new-password" required></div>
@@ -1217,7 +1236,7 @@ VIEWS.settings = (root) => {
   $("#pwForm").onsubmit = async (e) => {
     e.preventDefault();
     try {
-      if (cloud.on) { await cloud.changePassword($("#pwNew").value); toast("Password saved"); VIEWS.settings(root); return; }
+      if (cloud.on) { await cloud.changePassword($("#pwNew").value, $("#pwCur")?.value || ""); toast("Password saved"); VIEWS.settings(root); return; }
       await auth.changePassword(S.user.id, $("#pwCur")?.value || "", $("#pwNew").value); S.user = auth.users()[S.user.id]; toast("Password saved"); VIEWS.settings(root);
     }
     catch (ex) { toast(ex.message, "alert"); }
@@ -1363,7 +1382,7 @@ const auth = {
    When CG_CONFIG.supabaseUrl + supabaseAnonKey are set, accounts live on the sign-in server
    (passwords hashed there, usable from any device). Login returns a short-lived personal access
    token; every microservice call carries it and the microservice verifies it with Supabase. */
-const cloud = {
+const supa = {
   url: String(CFG.supabaseUrl || "").replace(/\/+$/, ""), key: CFG.supabaseAnonKey || "",
   get on() { return !!(this.url && this.key); },
   s: null,                                   // {access_token, refresh_token, expires_at, user}
@@ -1435,7 +1454,7 @@ const cloud = {
     this.fromGoTrue(await this.req("/auth/v1/token?grant_type=id_token", { provider: "google", id_token: idToken }), true);
     const u = this.user(); u._new = Date.now() - Date.parse(u.createdAt) < 60000; return u;
   },
-  async changePassword(next) {
+  async changePassword(next, _current) {
     const pp = auth.passwordProblem(next); if (pp) throw new Error(pp);
     if (!(await this.fresh())) throw new Error("Your sign-in expired. Log in again.");
     await this.req("/auth/v1/user", { password: next }, { method: "PUT", token: this.token() });
@@ -1451,6 +1470,69 @@ const cloud = {
     try { sessionStorage.removeItem("cg.cloud"); localStorage.removeItem("cg.cloud"); } catch { /* ignore */ }
   },
 };
+
+/* ============================== server accounts (the transcription service) ==============================
+   When CG_CONFIG.accountsUrl is set: sign up / log in with user ID + password against that server.
+   It stores the account (scrypt-hashed password) and returns a signed session token that is sent
+   automatically with every call. No token to copy or paste. */
+const srv = {
+  url: String(CFG.accountsUrl || "").replace(/\/+$/, ""),
+  get on() { return !!this.url; },
+  s: null,                                   // {token, expires_at (ms), user}
+  async req(path, body, token) {
+    let r;
+    try {
+      r = await fetch(this.url + path, { method: "POST", headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify(body || {}) });
+    } catch { throw new Error("Can't reach the sign-in server. Check your connection and try again (it may take a minute to wake up)."); }
+    let j = {}; try { j = await r.json(); } catch { /* not JSON */ }
+    if (!r.ok) { const e = new Error(j.detail || `Sign-in server error (HTTP ${r.status}).`); e.status = r.status; throw e; }
+    return j;
+  },
+  store(sess, remember) {
+    this.s = sess;
+    try { sessionStorage.removeItem("cg.srv"); localStorage.removeItem("cg.srv"); if (sess) (remember ? localStorage : sessionStorage).setItem("cg.srv", JSON.stringify(sess)); } catch { /* ignore */ }
+  },
+  remembered() { try { return !!localStorage.getItem("cg.srv"); } catch { return false; } },
+  token() { return this.s && this.s.token; },
+  async fresh() { return !!(this.s && this.s.expires_at - Date.now() > 120000); },
+  user() {
+    const u = this.s.user;
+    return { id: u.id, ns: u.id, name: u.name, email: u.email, createdAt: u.created_at, cloud: true, hash: true };
+  },
+  async signup({ name, email, id, password }) {
+    const pp = auth.passwordProblem(password); if (pp) throw new Error(pp);
+    const j = await this.req("/v1/auth/signup", { name, user_id: id, email, password });
+    return { id: j.user.id, email: j.user.email, session: true };    // no email confirmation step
+  },
+  async login(login, password, remember) {
+    try {
+      const j = await this.req("/v1/auth/login", { login, password });
+      this.store({ token: j.token, expires_at: j.expires_at * 1000, user: j.user }, remember);
+      return this.user();
+    } catch (e) {
+      if (e.status === 401 && auth.find(login)) throw new Error("Accounts now live on the CallGuard server, so log-ins work on any device. Please sign up once more. Use the same user ID to keep this browser's call history.");
+      throw e;
+    }
+  },
+  async google() { throw new Error("Google sign-in isn't switched on yet. Use your user ID and password."); },
+  async changePassword(next, current) {
+    const pp = auth.passwordProblem(next); if (pp) throw new Error(pp);
+    const j = await this.req("/v1/auth/password", { current, new: next }, this.token());
+    this.store({ ...this.s, token: j.token, expires_at: j.expires_at * 1000 }, this.remembered());
+  },
+  async restore() {
+    try { this.s = JSON.parse(sessionStorage.getItem("cg.srv") || localStorage.getItem("cg.srv") || "null"); } catch { this.s = null; }
+    if (!this.s || !(await this.fresh())) { this.store(null, false); return null; }
+    return this.user();
+  },
+  async logout() {
+    try { if (this.s) await this.req("/v1/auth/logout", {}, this.token()); } catch { /* still log out here */ }
+    this.store(null, false);
+  },
+};
+// Which account system is active: Supabase if configured, else the CallGuard server, else this browser only.
+const cloud = supa.on ? supa : srv;
 
 /* ---------- Google sign-in: uses the Google account already signed in on the device ---------- */
 const google = {

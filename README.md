@@ -8,6 +8,8 @@ It is a static single-page app (HTML/CSS/JS, no build step), hosted on GitHub Pa
 
 ## Accounts (required)
 
+**Accounts live on the CallGuard server** (`accountsUrl` in `docs/assets/config.js`). Sign up with a user ID and password, log in from any device, and every call is verified automatically with your session token. There's nothing to copy or paste.
+
 Nobody sees the dashboard without logging in.
 
 - **Sign up, two ways:**
