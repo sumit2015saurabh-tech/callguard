@@ -796,7 +796,7 @@ const recorder = {
     const on = this.active(), t = on ? fmtDur((Date.now() - this.t0) / 1000) : "";
     const btn = $("#recBtn"), st = $("#recState");
     if (btn) btn.innerHTML = on ? `${icon("x")}Stop recording` : `${icon("mic")}${S.pending && /^recording-/.test(S.pending.name) ? "Record again" : "Start recording"}`;
-    if (st) st.innerHTML = on ? `<span class="row"><span class="rec-dot"></span>Recording ${t}. Keeps going if you switch pages.</span>`
+    if (st) st.innerHTML = on ? `<span class="row"><span class="rec-dot"></span>Recording ${t}</span>`
       : (S.pending && /^recording-/.test(S.pending.name) ? "Recording ready." : "Uses your microphone. Nothing is sent until you click Analyze.");
     let bar = $("#recBar");
     if (!on) { if (bar) bar.remove(); return; }
@@ -816,7 +816,7 @@ function renderRun() {
   if (!box) return;
   const r = S.run;
   if (steps) steps.innerHTML = stepItems(r ? r.state : {});
-  if (btn) { btn.disabled = !!(r && r.running); btn.innerHTML = r && r.running ? `<span class="spin"></span> Analysing… (you can switch pages)` : `${icon("wave")}Analyze call`; }
+  if (btn) { btn.disabled = !!(r && r.running); btn.innerHTML = r && r.running ? `<span class="spin"></span> Analysing…` : `${icon("wave")}Analyze call`; }
   if (r && r.running && r.partial) {         // transcript arrives first; the fraud verdict follows
     box.innerHTML = `<div class="card card-pad"><div class="row" style="margin-bottom:8px"><span class="spin"></span><h3>Transcript ready. Checking for fraud…</h3></div>
       <div class="muted" style="white-space:pre-wrap;font-size:14px;line-height:1.55">${esc(r.partial)}</div></div>`;
@@ -850,7 +850,7 @@ const stepItems = (state = {}) => STEPS.map(([k, t, sub], i) => {
 }).join("");
 
 async function runPipeline(blob, fileName) {
-  if (S.run && S.run.running) { toast("An analysis is already running. It continues while you switch pages.", "alert"); return; }
+  if (S.run && S.run.running) { toast("An analysis is already running.", "alert"); return; }
   const state = {};
   S.run = { state, running: true, blob, fileName };
   const set = (k, st, note) => { state[k] = { st, note }; const el = $("#steps"); if (el) el.innerHTML = stepItems(state); };
