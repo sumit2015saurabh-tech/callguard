@@ -1100,7 +1100,7 @@ VIEWS.settings = (root) => {
       <div class="stack">
         <div class="card card-pad stack">
           <div class="row"><span class="avatar" style="width:40px;height:40px">${esc(initials(S.user.name))}</span>
-            <div><h3>${esc(S.user.name)}</h3><div class="faint" style="font-size:12.5px">@${esc(S.user.id)} · ${esc(S.user.email)} · member since ${fmtDate(S.user.createdAt)}</div></div>
+            <div><h3>${esc(S.user.name)}</h3><div class="faint" style="font-size:12.5px">@${esc(S.user.id)}${S.user.email ? ` · ${esc(S.user.email)}` : ""} · member since ${fmtDate(S.user.createdAt)}</div></div>
             <div class="spacer"></div><button class="btn btn-sm" id="logout2">${icon("logout")}Log out</button></div>
           <form class="form-grid" id="pwForm" style="grid-template-columns:1fr 1fr auto;align-items:end">
             <div class="field"><label for="pwCur">Current password</label><input class="input" id="pwCur" type="password" autocomplete="current-password" required></div>
@@ -1232,24 +1232,39 @@ const auth = {
   find(login) {
     const u = this.users(), l = String(login || "").trim().toLowerCase();
     if (u[l]) return u[l];
-    return Object.values(u).find((x) => x.email.toLowerCase() === l) || null;
+    return Object.values(u).find((x) => x.email && x.email.toLowerCase() === l) || null;
   },
   passwordProblem(p) {
     if (p.length < 8) return "Password must be at least 8 characters.";
     if (!/[A-Za-z]/.test(p) || !/[0-9]/.test(p)) return "Use at least one letter and one number.";
     return "";
   },
-  async signup({ name, email, id, password }) {
-    id = id.trim().toLowerCase(); email = email.trim();
+  /** A free user ID made from the email's local part, e.g. sumit.saurabh@x.com -> sumit.saurabh (or sumit.saurabh2). */
+  idFromEmail(email) {
+    const users = this.users();
+    let base = String(email).split("@")[0].toLowerCase().replace(/[^a-z0-9_.]/g, "").slice(0, 16);
+    if (base.length < 3) base = (base + "user").slice(0, 16);
+    let id = base, n = 2;
+    while (users[id]) id = `${base}${n++}`;
+    return id;
+  },
+  async signup({ name, email, id, password, method }) {
+    email = String(email || "").trim();
+    id = String(id || "").trim().toLowerCase();
     if (!name.trim()) throw new Error("Enter your full name.");
-    if (!isEmail(email)) throw new Error("Enter a valid email address.");
-    if (!/^[a-z0-9_.]{3,20}$/.test(id)) throw new Error("User ID: 3–20 characters, letters, numbers, dot or underscore.");
+    if (method === "email") {
+      if (!isEmail(email)) throw new Error("Enter a valid email address.");
+      id = this.idFromEmail(email);
+    } else {
+      if (!/^[a-z0-9_.]{3,20}$/.test(id)) throw new Error("User ID: 3–20 characters, letters, numbers, dot or underscore.");
+      if (email && !isEmail(email)) throw new Error("That email address doesn't look right (or leave it empty).");
+    }
     const pp = this.passwordProblem(password); if (pp) throw new Error(pp);
     const users = this.users();
     if (users[id]) throw new Error("That user ID is taken. Try another.");
-    if (Object.values(users).some((x) => x.email.toLowerCase() === email.toLowerCase())) throw new Error("An account with this email already exists. Log in instead.");
+    if (email && Object.values(users).some((x) => x.email && x.email.toLowerCase() === email.toLowerCase())) throw new Error("An account with this email already exists. Log in instead.");
     const salt = this.b64(crypto.getRandomValues(new Uint8Array(16)));
-    users[id] = { id, name: name.trim(), email, salt, iter: 210000, hash: await this.hash(password, salt), createdAt: new Date().toISOString() };
+    users[id] = { id, name: name.trim(), email, method: method === "email" ? "email" : "userid", salt, iter: 210000, hash: await this.hash(password, salt), createdAt: new Date().toISOString() };
     this.saveUsers(users);
     return users[id];
   },
@@ -1283,7 +1298,7 @@ const auth = {
   logout() { GLS.del("session"); location.hash = ""; location.reload(); },
 };
 
-function authScreen(mode = "login", note = "") {
+function authScreen(mode = "login", note = "", method = "email") {
   const box = $("#auth");
   box.hidden = false; $("#appRoot").hidden = true;
   document.title = mode === "login" ? "Log in · CallGuard" : "Sign up · CallGuard";
@@ -1292,15 +1307,22 @@ function authScreen(mode = "login", note = "") {
       <div class="brand" style="padding:0 0 14px"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32"><rect width="32" height="32" rx="9"/><path d="M16 6l8 3v6c0 5-3.4 8.6-8 10-4.6-1.4-8-5-8-10V9z"/></svg></span>
         <div><div class="brand-name">CallGuard</div><div class="brand-sub">Scam-call protection</div></div></div>
       <h2>${mode === "login" ? "Welcome back" : "Create your account"}</h2>
-      <p class="muted" style="margin:4px 0 18px">${mode === "login" ? "Log in with your user ID (or email) and password." : "Sign up with your email, choose a user ID, and set a password."}</p>
+      <p class="muted" style="margin:4px 0 16px">${mode === "login" ? "Log in with your user ID or email, and your password." : "Choose how you want to sign up."}</p>
+      ${mode === "signup" ? `<div class="seg auth-seg" id="methodSeg" style="margin-bottom:16px">
+        <button type="button" data-method="email" class="${method === "email" ? "on" : ""}">${icon("mail")}Sign up with email</button>
+        <button type="button" data-method="userid" class="${method === "userid" ? "on" : ""}">${icon("users")}Create a user ID</button></div>` : ""}
       ${note ? `<div class="banner" style="margin-bottom:14px">${icon("check")}<div>${note}</div></div>` : ""}
       <div class="banner warn" id="authErr" hidden style="margin-bottom:14px"></div>
       <form id="authForm" class="stack" style="gap:14px" novalidate>
         ${mode === "signup" ? `
           <div class="field"><label for="suName">Full name</label><input class="input" id="suName" autocomplete="name" required></div>
-          <div class="field"><label for="suEmail">Email</label><input class="input" id="suEmail" type="email" autocomplete="email" required></div>
+          ${method === "email" ? `
+          <div class="field"><label for="suEmail">Email</label><input class="input" id="suEmail" type="email" autocomplete="email" required placeholder="you@example.com">
+            <span class="hint" id="idPreview">You'll log in with this email. A user ID is created for you too.</span></div>`
+          : `
           <div class="field"><label for="suId">User ID</label><input class="input" id="suId" autocomplete="username" required placeholder="e.g. sumit_s" maxlength="20">
             <span class="hint">3–20 characters: letters, numbers, dot or underscore. You'll log in with this.</span></div>
+          <div class="field"><label for="suEmail">Email <span class="faint">(optional)</span></label><input class="input" id="suEmail" type="email" autocomplete="email" placeholder="Lets you log in with email too"></div>`}
           <div class="field"><label for="suPw">Password</label><input class="input" id="suPw" type="password" autocomplete="new-password" required>
             <span class="hint">At least 8 characters, with a letter and a number.</span></div>
           <div class="field"><label for="suPw2">Confirm password</label><input class="input" id="suPw2" type="password" autocomplete="new-password" required></div>`
@@ -1316,6 +1338,15 @@ function authScreen(mode = "login", note = "") {
       <div class="faint" style="font-size:12px;margin-top:14px;text-align:center">Accounts and call history are stored securely in this browser on this device.</div>
     </div>`;
   $$("[data-mode]", box).forEach((a) => a.onclick = (e) => { e.preventDefault(); authScreen(a.dataset.mode); });
+  $$("[data-method]", box).forEach((b) => b.onclick = () => {
+    const keep = { name: $("#suName")?.value || "", email: $("#suEmail")?.value || "" };
+    authScreen("signup", "", b.dataset.method);
+    $("#suName").value = keep.name; $("#suEmail").value = keep.email;
+  });
+  const ip = $("#idPreview");
+  if (ip) $("#suEmail").addEventListener("input", (e) => {
+    ip.innerHTML = isEmail(e.target.value) ? `You'll log in with this email or your user ID <b>${esc(auth.idFromEmail(e.target.value))}</b>.` : "You'll log in with this email. A user ID is created for you too.";
+  });
   const err = (m) => { const e = $("#authErr"); e.hidden = !m; e.innerHTML = m ? `${icon("alert")}<div>${esc(m)}</div>` : ""; };
   (mode === "login" ? $("#liId") : $("#suName")).focus();
   $("#authForm").onsubmit = async (e) => {
@@ -1324,9 +1355,11 @@ function authScreen(mode = "login", note = "") {
     try {
       if (mode === "signup") {
         if ($("#suPw").value !== $("#suPw2").value) throw new Error("The two passwords don't match.");
-        const u = await auth.signup({ name: $("#suName").value, email: $("#suEmail").value, id: $("#suId").value, password: $("#suPw").value });
-        authScreen("login", `Account <b>${esc(u.id)}</b> created. Log in with your user ID and password.`);
-        $("#liId").value = u.id; $("#liPw").focus();
+        const u = await auth.signup({ name: $("#suName").value, email: $("#suEmail").value, id: $("#suId")?.value, password: $("#suPw").value, method });
+        authScreen("login", method === "email"
+          ? `Account created. Log in with <b>${esc(u.email)}</b> or your user ID <b>${esc(u.id)}</b>.`
+          : `Account <b>${esc(u.id)}</b> created. Log in with your user ID and password.`);
+        $("#liId").value = method === "email" ? u.email : u.id; $("#liPw").focus();
         return;
       }
       const u = await auth.login($("#liId").value, $("#liPw").value);

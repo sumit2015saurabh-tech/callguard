@@ -10,8 +10,11 @@ It is a static single-page app (HTML/CSS/JS, no build step), hosted on GitHub Pa
 
 Nobody sees the dashboard without logging in.
 
-- **Sign up:** full name, email, a unique **user ID** (3–20 characters: letters, numbers, `.` or `_`) and a password (8+ characters with a letter and a number), entered twice to confirm.
-- **Log in:** user ID (or email) plus password. You can stay logged in on the device for up to 30 days.
+- **Sign up, two ways:**
+  - **Sign up with email:** full name, email and password. A user ID is created from the email (e.g. `sumit.saurabh`).
+  - **Create a user ID:** full name, a unique **user ID** (3–20 characters: letters, numbers, `.` or `_`), an optional email, and a password.
+  - Passwords need 8+ characters with a letter and a number, entered twice to confirm.
+- **Log in:** user ID or email, plus password. You can stay logged in on the device for up to 30 days.
 - **Per-user data:** each account has its own calls, contacts, settings and history.
 - **Settings → Account:** change password, log out.
 - **Security:** passwords are never stored. Only a salted PBKDF2-SHA-256 hash (210,000 rounds) is kept, compared in constant time.

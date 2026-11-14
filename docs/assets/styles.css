@@ -382,3 +382,6 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 .user-chip { display: flex; align-items: center; gap: 10px; padding: 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
 .user-chip .icon-btn { width: 32px; height: 32px; }
 .usage-mini + .user-chip { margin-top: -6px; }
+.auth-seg { display: flex; width: 100%; }
+.auth-seg button { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 8px 10px; }
+.auth-seg svg { width: 16px; height: 16px; }
