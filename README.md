@@ -49,54 +49,46 @@ Nobody sees the dashboard without logging in.
 - **Every call gets:** date, unique token (`CG-YYYYMMDD-XXXXXX`), summary, transcript, duration, word/token count, category, confidence, risk, and auto labels (`otp-request`, `money-request`, `urgency`, `threat`, `gift-card`, `crypto`, `remote-access`, `secrecy`, `banking`, `needs-review`, …) plus your own labels.
 - **History:** filter by text, date range, time-of-day range (overnight ranges work), fraud type, verdict, risk, label and alert status. Sort, and export the filtered list as CSV or JSON.
 - **History folder on your computer** (Chrome/Edge): mirrors every call to `CallGuard-History/<date>/<time_type_token>/` with `call.json`, `summary.txt`, `transcript.txt`, the audio, and an `index.csv`.
-- **Call detail drawer:** audio playback, transcript, labels, alert log, a "correct type" review (re-routes alerts), mark reviewed, delete.
+- **Call detail drawer:** audio playback, transcript, labels, alert log, mark reviewed, delete.
 - **Alerts:** a log of all alerts with status (sent / delivered / in outbox / failed / not sent), one-click "open in mail app", and retry.
 - **Overview:** KPIs, calls-per-day chart, fraud-by-type chart (click a bar to filter history), latest fraud, and the current routing.
 - **Plans and usage:** Starter / Family Pro / Business tiers with a monthly usage meter. Billing is not connected.
-- **Settings:** Demo vs Live mode, service URLs, API key, timeout, browser notifications, backup and restore, sample data.
+- **Settings:** microservice URL, notifier URL, API key, timeout, browser notifications, backup and restore.
 
 Data stays in the user's browser (IndexedDB plus the optional local folder). Nothing is sent anywhere except the service URLs you configure.
 
-## Connecting your services (Live mode)
+## Connecting your microservice
 
-Set these in **Settings → Services**. The API key, if set, is sent as `Authorization: Bearer <key>` and `X-API-Key`. Each service must allow CORS from the dashboard's origin.
+The fraud category always comes from **your microservice**. The dashboard never guesses or simulates it, and users can't change it. Without a microservice URL, calls can't be analysed.
 
-### 1. Transcriber microservice (required)
+Set the URL in `docs/assets/config.js` (`serviceUrl`) so every user gets it, or per user in **Settings → Microservice**. The optional API key is sent as `Authorization: Bearer <key>` and `X-API-Key`. The service must allow CORS from the dashboard's origin.
 
-`POST <transcriberUrl>` with `multipart/form-data`:
+### Microservice: `POST <serviceUrl>`, `multipart/form-data`
 
 | field | value |
 |---|---|
-| `file` | the audio |
+| `file` | the uploaded or recorded audio |
 | `call_token` | CallGuard's token for this call |
 
-Response JSON. Only `transcript` or `summary` is required:
+Response JSON. `category` is **required**, plus `transcript` or `summary`:
 
 ```json
 {
   "transcript": "Caller: This is your bank...",
   "summary": "Caller pretends to be the bank and asks for the OTP.",
+  "category": "F1",
+  "confidence": 0.91,
   "duration": 112,
   "language": "en",
-  "tokens": 154,
-  "category": "F1",
-  "confidence": 0.91
+  "tokens": 154
 }
 ```
 
-If the transcriber already returns `category` (`"F3"`, `3`, or a category name), it is used directly.
+`category` may be `"F3"`, `3`, or the category name. If it is missing, the call is rejected with a clear error.
 
-### 2. Classifier: your trained model (optional)
+### Notifier (optional): `POST <notifierUrl>`
 
-Called only when the transcriber gives no category.
-
-`POST <classifierUrl>` with JSON `{"transcript": "...", "summary": "...", "call_token": "CG-..."}` returns `{"category": "F0".."F9", "confidence": 0.0–1.0}`.
-
-### 3. Notifier (optional)
-
-Sends the emails and push notifications.
-
-`POST <notifierUrl>` with JSON for each alert:
+Sends the emails and notifications. It receives JSON for each alert:
 
 ```json
 { "to": "fraud@bank.com", "name": "Bank", "role": "Bank", "channel": "email",
@@ -105,11 +97,7 @@ Sends the emails and push notifications.
   "category_name": "Financial impersonation", "risk": "high", "created_at": "2026-11-14T12:17:00Z" }
 ```
 
-Without a notifier, emails wait in the **outbox** and open in the user's mail app with one click.
-
-## Demo mode
-
-The default mode. No audio leaves the browser: the transcriber and classifier responses are simulated from built-in sample calls, so the whole flow can be tried on the public site. **Load sample history** fills the dashboard with example calls and example contacts.
+Without a notifier, alerts wait in the **outbox**. Emails open in the user's mail app with one click.
 
 ## Run locally
 

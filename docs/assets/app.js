@@ -108,8 +108,8 @@ const idb = (() => {
 })();
 
 const DEFAULT_SETTINGS = {
-  workspace: "My workspace", mode: "demo", plan: "pro",
-  transcriberUrl: "", classifierUrl: "", notifierUrl: "", apiKey: "", timeoutSec: 120,
+  workspace: "My workspace", plan: "pro",
+  transcriberUrl: (window.CG_CONFIG && window.CG_CONFIG.serviceUrl) || "", notifierUrl: "", apiKey: "", timeoutSec: 120,
   browserNotify: false, alertsSeenAt: 0,
 };
 const DEFAULT_CONTACTS = {
@@ -184,36 +184,20 @@ async function fetchJSON(url, opts) {
 }
 
 const services = {
-  async transcribe(blob, fileName, token, demoCode) {
-    if (S.settings.mode === "live") {
-      if (!S.settings.transcriberUrl) throw new Error("Add your transcriber URL in Settings first.");
-      const fd = new FormData();
-      fd.append("file", blob, fileName || "call.webm");
-      fd.append("call_token", token);
-      return normalise(await fetchJSON(S.settings.transcriberUrl, { method: "POST", body: fd, headers: authHeaders() }));
-    }
-    await sleep(1100 + Math.random() * 700);
-    const pool = D.samples;
-    const s = demoCode && demoCode !== "auto" ? pool.find((x) => x.category === demoCode) : pool[Math.floor(Math.random() * pool.length)];
-    return { ...normalise({ transcript: s.transcript, summary: s.summary, duration: s.duration, language: "en" }), _demo: s };
-  },
-  async classify(tr, token) {
-    if (tr.category) return { category: tr.category, confidence: tr.confidence, scores: tr.scores, by: "transcriber" };
-    if (S.settings.mode === "live") {
-      if (!S.settings.classifierUrl) throw new Error("The transcriber did not return a category and no classifier URL is set.");
-      const r = normalise(await fetchJSON(S.settings.classifierUrl, {
-        method: "POST", headers: { "Content-Type": "application/json", ...authHeaders() },
-        body: JSON.stringify({ transcript: tr.transcript, summary: tr.summary, call_token: token }),
-      }));
-      if (!r.category) throw new Error("Classifier response had no category (expected F0–F9).");
-      return { category: r.category, confidence: r.confidence, scores: r.scores, by: "classifier" };
-    }
-    await sleep(600);
-    const s = tr._demo;
-    return { category: s.category, confidence: s.confidence, by: "demo" };
+  /** Send the uploaded audio to the microservice. Its JSON reply carries transcript, summary and the fraud category. */
+  async analyse(blob, fileName, token) {
+    if (!S.settings.transcriberUrl) throw new Error("Your microservice is not connected. Add its URL in Settings → Microservice.");
+    if (!blob) throw new Error("Upload or record a call first.");
+    const fd = new FormData();
+    fd.append("file", blob, fileName || "call.webm");
+    fd.append("call_token", token);
+    const r = normalise(await fetchJSON(S.settings.transcriberUrl, { method: "POST", body: fd, headers: authHeaders() }));
+    if (!r.transcript && !r.summary) throw new Error("The microservice returned no transcript or summary.");
+    if (!r.category) throw new Error("The microservice response has no fraud category. Expected a field like \"category\": \"F0\"…\"F9\".");
+    return r;
   },
   async notify(n, rec) {
-    if (S.settings.mode === "live" && S.settings.notifierUrl) {
+    if (S.settings.notifierUrl) {
       await fetchJSON(S.settings.notifierUrl, {
         method: "POST", headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({ to: n.to, name: n.name, role: n.role, channel: n.channel, subject: n.subject, body: n.body,
@@ -242,8 +226,6 @@ function autoLabels(rec) {
     ["secrecy", /(don't tell|do not tell|keep (this|it) secret|don't hang up|do not hang up)/],
   ];
   for (const [lab, rx] of rules) if (rx.test(t)) L.push(lab);
-  if (rec.source === "demo") L.push("demo");
-  if (rec.source === "sample") L.push("sample-data");
   return [...new Set(L)];
 }
 
@@ -300,7 +282,7 @@ async function dispatchAlerts(rec) {
   for (const n of rec.notifications) {
     if (n.status !== "pending") continue;
     try {
-      n.status = n.channel === "in-app" && !(S.settings.mode === "live" && S.settings.notifierUrl) ? "delivered" : await services.notify(n, rec);
+      n.status = await services.notify(n, rec);
     } catch (e) { n.status = "failed"; n.reason = e.message; }
     n.at = new Date().toISOString();
   }
@@ -450,16 +432,16 @@ function route() {
 
 function monthUsage() {
   const now = new Date();
-  return S.calls.filter((c) => { const d = new Date(c.createdAt); return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear() && c.source !== "sample"; }).length;
+  return S.calls.filter((c) => { const d = new Date(c.createdAt); return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear() ; }).length;
 }
 const currentPlan = () => D.plans.find((p) => p.id === S.settings.plan) || D.plans[0];
 
 function paintChrome() {
   $("#workspaceName").textContent = S.settings.workspace || "My workspace";
-  const live = S.settings.mode === "live";
+  const live = !!S.settings.transcriberUrl;
   const mp = $("#modePill");
   mp.className = `mode-pill ${live ? "live" : ""}`;
-  mp.innerHTML = live ? `<span class="dot" style="background:var(--good)"></span>Live services` : `<span class="dot" style="background:var(--lav)"></span>Demo mode`;
+  mp.innerHTML = live ? `<span class="dot" style="background:var(--good)"></span>Microservice connected` : `<span class="dot" style="background:var(--warning)"></span>Microservice not connected`;
   const plan = currentPlan(), used = monthUsage();
   $("#usageMini").innerHTML = `<div class="row" style="justify-content:space-between"><b>${esc(plan.name)} plan</b><span class="faint">${used.toLocaleString()} / ${plan.calls.toLocaleString()}</span></div>
     <div class="meter"><span style="width:${Math.min(100, (used / plan.calls) * 100)}%"></span></div>
@@ -539,8 +521,8 @@ VIEWS.overview = (root) => {
   const plan = currentPlan(), used = monthUsage();
 
   root.innerHTML = `
-    ${!S.calls.length ? `<div class="banner" style="margin-bottom:16px">${icon("shield")}<div><b>Welcome to CallGuard.</b> Analyse your first call, or load sample history to explore the dashboard.
-      <div class="row" style="margin-top:10px"><a class="btn btn-sm btn-primary" href="#/analyze">${icon("wave")}Analyze a call</a><button class="btn btn-sm" id="seedBtn">Load sample history</button><a class="btn btn-sm btn-ghost" href="#/contacts">Set up contacts</a></div></div></div>` : ""}
+    ${!S.calls.length ? `<div class="banner" style="margin-bottom:16px">${icon("shield")}<div><b>Welcome to CallGuard.</b> Upload your first call. Its fraud category comes from your microservice.
+      <div class="row" style="margin-top:10px"><a class="btn btn-sm btn-primary" href="#/analyze">${icon("wave")}Analyze a call</a><a class="btn btn-sm" href="#/contacts">Set up contacts</a>${S.settings.transcriberUrl ? "" : `<a class="btn btn-sm btn-ghost" href="#/settings">Connect microservice</a>`}</div></div></div>` : ""}
     <div class="row" style="margin-bottom:14px">
       <div class="muted">Showing the last ${R} days</div><div class="spacer"></div>
       <div class="seg" id="rangeSeg">${[7, 14, 30].map((n) => `<button data-r="${n}" class="${n === R ? "on" : ""}">${n} days</button>`).join("")}</div>
@@ -582,7 +564,6 @@ VIEWS.overview = (root) => {
 
   $("#rangeSeg").onclick = (e) => { const b = e.target.closest("button"); if (b) { S.overviewRange = +b.dataset.r; route(); } };
   $$("[data-open]", root).forEach((li) => li.onclick = () => openDrawer(li.dataset.open));
-  const seed = $("#seedBtn"); if (seed) seed.onclick = seedSamples;
 };
 
 function routingSummary() {
@@ -599,11 +580,11 @@ function routingSummary() {
 
 /* ============================== view: analyze ============================== */
 VIEWS.analyze = (root) => {
-  const live = S.settings.mode === "live";
+  const live = !!S.settings.transcriberUrl;
   const plan = currentPlan(), used = monthUsage();
   root.innerHTML = `
-    <p class="section-intro">Upload or record a call. CallGuard sends the audio to your transcriber service, gets the transcript and summary, decides the fraud type, labels the call, alerts the right people and saves everything to history.</p>
-    ${!live ? `<div class="banner" style="margin-bottom:16px">${icon("alert")}<div><b>Demo mode.</b> No audio leaves your browser: the transcriber and classifier responses are simulated from sample calls. Add your service URLs in <a href="#/settings">Settings</a> and switch to Live to use your real model.</div></div>` : ""}
+    <p class="section-intro">Upload or record a call. CallGuard sends the audio to your microservice, which returns the transcript, summary and fraud category. CallGuard then labels the call, alerts the right people and saves everything to history.</p>
+    ${!live ? `<div class="banner warn" style="margin-bottom:16px">${icon("alert")}<div><b>Microservice not connected.</b> Calls can't be analysed until its URL is added in <a href="#/settings">Settings</a>.</div></div>` : ""}
     ${used >= plan.calls ? `<div class="banner warn" style="margin-bottom:16px">${icon("alert")}<div>You have used all ${plan.calls} calls on the ${esc(plan.name)} plan this month. <a href="#/plans">Upgrade</a> to keep analysing.</div></div>` : ""}
     <div class="grid g-main">
       <div class="stack">
@@ -625,19 +606,15 @@ VIEWS.analyze = (root) => {
             </div>
           </div>
           <div id="filePill" style="margin-top:14px"></div>
-          ${!live ? `<div class="field" style="margin-top:14px"><label for="demoCode">Simulated service response</label>
-            <select class="input" id="demoCode"><option value="auto">Random sample call</option>${CODES.map((c) => `<option value="${c}">${c} · ${esc(CATS[c].name)}</option>`).join("")}</select>
-            <span class="hint">Demo only: pick what the fake transcriber should "hear". Use "Try a sample call" below if you have no audio file.</span></div>` : ""}
           <div class="row" style="margin-top:16px">
             <button class="btn btn-primary" id="analyzeBtn" disabled>${icon("wave")}Analyze call</button>
-            ${!live ? `<button class="btn" id="sampleBtn">Try a sample call</button>` : ""}
           </div>
         </div>
         <div id="resultBox"></div>
       </div>
       <div class="card card-pad" style="align-self:start">
         <h3 style="margin-bottom:6px">2. Pipeline</h3>
-        <div class="faint" style="font-size:12.5px;margin-bottom:8px">${live ? `Transcriber: <span class="mono">${esc(S.settings.transcriberUrl || "not set")}</span>` : "Simulated services"}</div>
+        <div class="faint" style="font-size:12.5px;margin-bottom:8px">${live ? `Microservice: <span class="mono">${esc(S.settings.transcriberUrl)}</span>` : "Microservice not connected"}</div>
         <ol class="steps" id="steps">${stepItems()}</ol>
       </div>
     </div>`;
@@ -685,13 +662,12 @@ VIEWS.analyze = (root) => {
   };
 
   $("#analyzeBtn").onclick = () => S.pending && runPipeline(S.pending.blob, S.pending.name);
-  const sb = $("#sampleBtn"); if (sb) sb.onclick = () => runPipeline(null, "", true);
 };
 
 const STEPS = [
   ["upload", "Receive audio", "Audio file or recording"],
-  ["transcribe", "Transcriber service", "Transcript + summary"],
-  ["classify", "Fraud classification", "Category F0–F9 + confidence"],
+  ["transcribe", "Microservice", "Transcript, summary + category"],
+  ["classify", "Fraud category", "F0–F9 from the microservice"],
   ["label", "Label & save", "Date, token, labels, history"],
   ["alert", "Route alerts", "Nominee · bank · authorised · emergency"],
 ];
@@ -701,7 +677,7 @@ const stepItems = (state = {}) => STEPS.map(([k, t, sub], i) => {
     <div><div class="s-title">${t}</div><div class="s-sub">${esc(s.note || sub)}</div></div></li>`;
 }).join("");
 
-async function runPipeline(blob, fileName, sampleOnly = false) {
+async function runPipeline(blob, fileName) {
   const state = {};
   const set = (k, st, note) => { state[k] = { st, note }; const el = $("#steps"); if (el) el.innerHTML = stepItems(state); };
   const btn = $("#analyzeBtn"); if (btn) btn.disabled = true;
@@ -710,18 +686,17 @@ async function runPipeline(blob, fileName, sampleOnly = false) {
   const token = makeToken(new Date(createdAt));
   let cur = "upload";
   try {
-    set("upload", "done", sampleOnly ? "Sample call (no audio)" : `${fileName} · ${(blob.size / 1024).toFixed(0)} KB`);
-    cur = "transcribe"; set("transcribe", "active", S.settings.mode === "live" ? "Uploading to transcriber…" : "Simulating transcriber…");
-    const demoCode = $("#demoCode")?.value;
-    const tr = await services.transcribe(blob, fileName, token, demoCode);
-    if (tr.duration == null && blob) tr.duration = await audioDuration(blob);
-    if (!tr.transcript && !tr.summary) throw new Error("Transcriber returned no transcript or summary.");
+    if (!blob) throw new Error("Upload or record a call first.");
+    set("upload", "done", `${fileName} · ${(blob.size / 1024).toFixed(0)} KB`);
+    cur = "transcribe"; set("transcribe", "active", "Sending audio to your microservice…");
+    const tr = await services.analyse(blob, fileName, token);
+    if (tr.duration == null) tr.duration = await audioDuration(blob);
     set("transcribe", "done", `${(tr.transcript.match(/\S+/g) || []).length} words${tr.summary ? " · summary received" : " · no summary"}`);
-    cur = "classify"; set("classify", "active", "Deciding fraud type…");
-    const cls = await services.classify(tr, token);
+    cur = "classify";
+    const cls = { category: tr.category, confidence: tr.confidence, scores: tr.scores, by: "microservice" };
     set("classify", "done", `${cls.category} · ${CATS[cls.category].name}${cls.confidence != null ? ` (${pct(cls.confidence)})` : ""}`);
     cur = "label"; set("label", "active");
-    const rec = buildRecord({ token, createdAt, fileName: sampleOnly ? "sample call" : fileName, audioType: blob?.type, tr, cls, source: S.settings.mode === "live" ? "live" : "demo" });
+    const rec = buildRecord({ token, createdAt, fileName, audioType: blob.type, tr, cls, source: "microservice" });
     rec.notifications = planAlerts(rec);
     await saveRecord(rec, blob);
     set("label", "done", `${rec.labels.length} labels · saved${S.dir ? " + history folder" : ""}`);
@@ -729,7 +704,7 @@ async function runPipeline(blob, fileName, sampleOnly = false) {
     await dispatchAlerts(rec);
     await saveRecord(rec, null);
     const n = alertCount(rec);
-    set("alert", "done", rec.isFraud ? `${n} alert${n === 1 ? "" : "s"} ${S.settings.mode === "live" && S.settings.notifierUrl ? "sent" : "ready"}` : "Not fraud: no alerts needed");
+    set("alert", "done", rec.isFraud ? `${n} alert${n === 1 ? "" : "s"} ${S.settings.notifierUrl ? "sent" : "in outbox"}` : "Not fraud: no alerts needed");
     $("#resultBox").innerHTML = resultCard(rec);
     bindResult($("#resultBox"), rec);
     S.pending = null;
@@ -876,7 +851,7 @@ VIEWS.history = (root) => {
       <td class="nowrap">${fmtDate(c.createdAt)}</td><td class="mono">${localTime(c.createdAt)}</td>
       <td class="mono nowrap">${esc(c.token)}</td><td>${catChip(c.category)}</td><td>${verdictBadge(c)}</td><td>${riskBadge(c.risk)}</td>
       <td style="min-width:120px">${confBar(c.confidence)}</td>
-      <td>${(() => { const ls = [...c.userLabels, ...c.labels.filter((l) => !CODES.includes(l) && !["fraud", "safe", "demo", "sample-data"].includes(l) && !l.endsWith("-risk"))];
+      <td>${(() => { const ls = [...c.userLabels, ...c.labels.filter((l) => !CODES.includes(l) && !["fraud", "safe"].includes(l) && !l.endsWith("-risk"))];
         return `<div class="labels">${ls.slice(0, 2).map((l) => `<span class="chip ${c.userLabels.includes(l) ? "chip-user" : "chip-label"}">${esc(l)}</span>`).join("")}${ls.length > 2 ? `<span class="chip" title="${esc(ls.slice(2).join(", "))}">+${ls.length - 2}</span>` : ""}</div>`; })()}</td>
       <td class="num">${alertCount(c) || `<span class="faint">0</span>`}</td></tr>`).join("")
       : `<tr><td colspan="9"><div class="empty">${icon("clock")}<div>${S.calls.length ? "No calls match these filters." : "No calls yet. Analyse one to start your history."}</div></div></td></tr>`;
@@ -928,9 +903,8 @@ async function openDrawer(id) {
         <div class="card card-pad"><div class="row"><div class="lbl">Alerts</div><div class="spacer"></div>${rec.isFraud ? `<button class="btn btn-sm" id="reroute">Re-run routing</button>` : ""}</div>
           ${rec.notifications.length ? rec.notifications.map((n) => notifRow(n, rec)).join("") : `<div class="faint" style="margin-top:6px">No alerts for this call.</div>`}</div>
         <div class="card card-pad"><div class="lbl" style="margin-bottom:8px">Review</div>
-          <div class="row"><select class="input" id="override" style="flex:1">${CODES.map((c) => `<option value="${c}" ${c === rec.category ? "selected" : ""}>${c} · ${esc(CATS[c].name)}</option>`).join("")}</select>
-          <button class="btn" id="applyOverride">Correct type</button></div>
-          <div class="row" style="margin-top:12px"><button class="btn btn-soft" id="markReviewed">${icon("check")}${rec.reviewed ? "Mark unreviewed" : "Mark reviewed"}</button>
+          <div class="faint" style="font-size:12.5px;margin-bottom:10px">The category comes from your microservice and can't be changed here.</div>
+          <div class="row"><button class="btn btn-soft" id="markReviewed">${icon("check")}${rec.reviewed ? "Mark unreviewed" : "Mark reviewed"}</button>
           <button class="btn btn-sm btn-ghost" id="dlJson">${icon("download")}Download JSON</button><div class="spacer"></div>
           <button class="btn btn-sm btn-ghost btn-danger" id="delCall">${icon("trash")}Delete</button></div></div>
       </div>`;
@@ -938,17 +912,6 @@ async function openDrawer(id) {
     $("#labelForm").onsubmit = async (e) => { e.preventDefault(); const v = $("#labelInput").value.trim().toLowerCase().replace(/\s+/g, "-"); if (v && !rec.userLabels.includes(v)) { rec.userLabels.push(v); await saveRecord(rec); } paint(); };
     $$("[data-rmlabel]", dr).forEach((x) => x.onclick = async () => { rec.userLabels = rec.userLabels.filter((l) => l !== x.dataset.rmlabel); await saveRecord(rec); paint(); });
     $("#markReviewed").onclick = async () => { rec.reviewed = !rec.reviewed; if (rec.reviewed) rec.userLabels = [...new Set([...rec.userLabels, "reviewed"])]; else rec.userLabels = rec.userLabels.filter((l) => l !== "reviewed"); await saveRecord(rec); paint(); };
-    $("#applyOverride").onclick = async () => {
-      const code = $("#override").value; if (code === rec.category) return;
-      const wasFraud = rec.isFraud;
-      Object.assign(rec, { category: code, categoryName: CATS[code].name, isFraud: code !== "F0", isBanking: CATS[code].banking, risk: CATS[code].risk, classifiedBy: "manual review" });
-      rec.labels = autoLabels(rec); rec.userLabels = [...new Set([...rec.userLabels, "corrected"])];
-      await saveRecord(rec);
-      if (rec.isFraud && await modal({ title: "Send alerts for the corrected type?", body: `Routing will run again for <b>${code} · ${esc(CATS[code].name)}</b>.${wasFraud ? " Earlier alerts stay in the log." : ""}`, confirm: "Send alerts", cancel: "Not now" })) {
-        rec.notifications = [...rec.notifications, ...planAlerts(rec)]; await dispatchAlerts(rec); await saveRecord(rec);
-      }
-      paint(); refreshUnder();
-    };
     const rr = $("#reroute"); if (rr) rr.onclick = async () => {
       const plan = planAlerts(rec);
       if (!await modal({ title: "Re-run alert routing?", body: `This uses your current contacts and adds ${plan.length} alert${plan.length === 1 ? "" : "s"}:<br>${plan.map((n) => `· ${esc(n.role)} ${esc(n.to || n.reason || "")}`).join("<br>")}`, confirm: "Send", cancel: "Cancel" })) return;
@@ -977,7 +940,7 @@ VIEWS.alerts = (root) => {
   let fStatus = "all", fRole = "all";
   const counts = (st) => all.filter(({ n }) => st.includes(n.status)).length;
   root.innerHTML = `
-    <p class="section-intro">Every alert CallGuard planned for a fraud call. Without a notifier service, emails wait in the outbox: open each one in your mail app with a click. In Live mode with a notifier URL they are sent automatically.</p>
+    <p class="section-intro">Every alert CallGuard planned for a fraud call. Without a notifier service, emails wait in the outbox: open each one in your mail app with a click. With a notifier URL in Settings they are sent automatically.</p>
     <div class="grid g-4" style="margin-bottom:18px">
       <div class="card kpi"><div class="k-label">Sent / delivered</div><div class="k-value">${counts(["sent", "delivered"])}</div></div>
       <div class="card kpi"><div class="k-label">In outbox</div><div class="k-value">${counts(["queued"])}</div></div>
@@ -1062,7 +1025,7 @@ VIEWS.contacts = (root) => {
 VIEWS.plans = (root) => {
   const used = monthUsage(), plan = currentPlan();
   root.innerHTML = `
-    <p class="section-intro">CallGuard is sold as a service: pick a plan per workspace. Usage counts real and demo analyses this month (sample history is not counted).</p>
+    <p class="section-intro">CallGuard is sold as a service: pick a plan per workspace. Usage counts the calls analysed this month.</p>
     <div class="card card-pad" style="margin-bottom:18px"><div class="row"><div><div class="lbl">This month</div><div style="font-size:24px;font-weight:700">${used.toLocaleString()} <span class="faint" style="font-size:15px;font-weight:500">of ${plan.calls.toLocaleString()} calls</span></div></div><div class="spacer"></div><span class="chip chip-cat">${esc(plan.name)} plan</span></div>
       <div class="meter" style="height:10px"><span style="width:${Math.min(100, (used / plan.calls) * 100)}%"></span></div></div>
     <div class="grid g-3">${D.plans.map((p) => `<div class="card plan ${p.id === plan.id ? "current" : ""}">
@@ -1079,23 +1042,19 @@ VIEWS.plans = (root) => {
 /* ============================== view: settings ============================== */
 VIEWS.settings = (root) => {
   const st = S.settings;
-  const live = st.mode === "live";
   root.innerHTML = `
     <div class="grid g-2">
       <div class="card card-pad stack">
-        <div><h3>Services</h3><div class="faint" style="font-size:12.5px;margin-top:2px">Connect your transcriber and trained model. Demo mode simulates both.</div></div>
-        <div class="seg" id="modeSeg"><button data-m="demo" class="${!live ? "on" : ""}">Demo</button><button data-m="live" class="${live ? "on" : ""}">Live services</button></div>
-        <div class="field"><label for="sTr">Transcriber microservice URL</label><input class="input" id="sTr" data-k="transcriberUrl" placeholder="https://your-host/transcribe" value="${esc(st.transcriberUrl)}">
-          <span class="hint">POST multipart <span class="mono">file</span> + <span class="mono">call_token</span>. Returns JSON with <span class="mono">transcript</span>, <span class="mono">summary</span> and optionally <span class="mono">category</span> / <span class="mono">confidence</span>.</span></div>
-        <div class="field"><label for="sCl">Classifier URL (your trained model, optional)</label><input class="input" id="sCl" data-k="classifierUrl" placeholder="https://your-host/classify" value="${esc(st.classifierUrl)}">
-          <span class="hint">Used only when the transcriber does not return a category. POST JSON <span class="mono">{transcript, summary, call_token}</span> → <span class="mono">{category: "F0".."F9", confidence}</span>.</span></div>
+        <div><h3>Microservice</h3><div class="faint" style="font-size:12.5px;margin-top:2px">Every call is sent here. The fraud category always comes from its response.</div></div>
+        <div class="field"><label for="sTr">Microservice URL</label><input class="input" id="sTr" data-k="transcriberUrl" placeholder="https://your-host/analyse" value="${esc(st.transcriberUrl)}">
+          <span class="hint">POST multipart <span class="mono">file</span> + <span class="mono">call_token</span>. Must return JSON with <span class="mono">transcript</span>, <span class="mono">summary</span> and <span class="mono">category</span> (F0–F9), optionally <span class="mono">confidence</span>.</span></div>
         <div class="field"><label for="sNo">Notifier URL (email / push, optional)</label><input class="input" id="sNo" data-k="notifierUrl" placeholder="https://your-host/notify" value="${esc(st.notifierUrl)}">
           <span class="hint">POST JSON <span class="mono">{to, role, channel, subject, body, call_token, category}</span> per alert. Without it, emails go to the outbox.</span></div>
         <div class="form-grid">
           <div class="field"><label for="sKey">API key (sent as Bearer)</label><input class="input" id="sKey" type="password" data-k="apiKey" value="${esc(st.apiKey)}" autocomplete="off"></div>
           <div class="field"><label for="sTo">Timeout (seconds)</label><input class="input" id="sTo" type="number" min="10" max="900" data-k="timeoutSec" value="${esc(st.timeoutSec)}"></div>
         </div>
-        <div class="row"><button class="btn" id="testConn">Test transcriber</button><span class="faint" id="testOut" style="font-size:12.5px"></span></div>
+        <div class="row"><button class="btn" id="testConn">Test microservice</button><span class="faint" id="testOut" style="font-size:12.5px"></span></div>
       </div>
       <div class="stack">
         <div class="card card-pad stack">
@@ -1122,9 +1081,9 @@ VIEWS.settings = (root) => {
         </div>
         <div class="card card-pad stack">
           <h3>Data</h3>
-          <div class="row"><button class="btn" id="seed">Load sample history</button><button class="btn" id="backup">${icon("download")}Backup (JSON)</button>
+          <div class="row"><button class="btn" id="backup">${icon("download")}Backup (JSON)</button>
             <label class="btn">Restore<input type="file" id="restore" accept="application/json" hidden></label></div>
-          <div class="row"><button class="btn btn-ghost btn-danger" id="clearSample">Remove sample data</button><button class="btn btn-ghost btn-danger" id="wipe">${icon("trash")}Delete all data</button></div>
+          <div class="row"><button class="btn btn-ghost btn-danger" id="wipe">${icon("trash")}Delete all data</button></div>
         </div>
       </div>
     </div>`;
@@ -1135,16 +1094,11 @@ VIEWS.settings = (root) => {
     try { await auth.changePassword(S.user.id, $("#pwCur")?.value || "", $("#pwNew").value); S.user = auth.users()[S.user.id]; toast("Password saved"); VIEWS.settings(root); }
     catch (ex) { toast(ex.message, "alert"); }
   };
-  $("#modeSeg").onclick = (e) => {
-    const b = e.target.closest("button"); if (!b) return;
-    if (b.dataset.m === "live" && !st.transcriberUrl) toast("Add the transcriber URL so live calls can be analysed", "alert");
-    st.mode = b.dataset.m; saveSettings(); VIEWS.settings(root);
-  };
   $$("[data-k]", root).forEach((el) => el.addEventListener("change", () => {
     const k = el.dataset.k; let v = el.value.trim();
     if (k.endsWith("Url") && v && !/^https?:\/\//i.test(v)) { toast("URLs must start with http:// or https://", "alert"); return; }
     if (k === "timeoutSec") v = Math.max(10, Math.min(900, +v || 120));
-    st[k] = v; saveSettings(); toast("Saved");
+    st[k] = v; saveSettings(); toast("Saved"); if (k === "transcriberUrl") VIEWS.settings(root);
   }));
   $("#sNotif").onchange = async (e) => {
     if (e.target.checked && "Notification" in window && Notification.permission !== "granted") {
@@ -1161,7 +1115,6 @@ VIEWS.settings = (root) => {
   };
   const pd = $("#pickDir"); if (pd) pd.onclick = async () => { try { await folder.connect(); VIEWS.settings(root); } catch (e) { if (e.name !== "AbortError") toast(e.message, "alert"); } };
   const sn = $("#syncNow"); if (sn) sn.onclick = async () => { try { await folder.syncAll(); } catch (e) { toast(e.message, "alert"); } };
-  $("#seed").onclick = seedSamples;
   $("#backup").onclick = () => download(`callguard-backup-${localDate(new Date())}.json`, JSON.stringify({ version: 1, settings: { ...st, apiKey: "" }, contacts: S.contacts, calls: S.calls }, null, 2), "application/json");
   $("#restore").onchange = async (e) => {
     const f = e.target.files[0]; if (!f) return;
@@ -1174,48 +1127,12 @@ VIEWS.settings = (root) => {
       paintChrome(); toast(`Restored ${data.calls.length} calls`);
     } catch (err) { toast("Restore failed: " + err.message, "alert"); }
   };
-  $("#clearSample").onclick = async () => {
-    const n = S.calls.filter((c) => c.source === "sample");
-    if (!n.length) return toast("No sample data to remove");
-    for (const c of n) await idb.del(c.id);
-    S.calls = S.calls.filter((c) => c.source !== "sample"); paintChrome(); toast(`Removed ${n.length} sample calls`);
-  };
   $("#wipe").onclick = async () => {
     if (!await modal({ title: "Delete all CallGuard data?", body: `This removes all <b>${S.calls.length}</b> calls, audio, contacts and settings from this browser. It cannot be undone. Files in your history folder are not touched.`, confirm: "Delete everything", danger: true })) return;
     await idb.clear(); try { Object.keys(localStorage).filter((k) => k.startsWith(`cg.u.${NS}.`)).forEach((k) => localStorage.removeItem(k)); } catch { /* ignore */ }
     location.reload();
   };
 };
-
-/* ============================== sample history ============================== */
-async function seedSamples() {
-  const C = S.contacts;
-  if (!C.nominee.name && !C.nominee.email && !C.authorised.length && !C.emergency.email) {
-    Object.assign(C, {
-      nominee: { name: "Priya Sharma", email: "priya.sharma@example.com", phone: "", relation: "Daughter" },
-      bank: { name: "Example Bank fraud desk", email: "fraud-desk@examplebank.example", branch: "", addedBy: "Priya Sharma" },
-      emergency: { name: "Rahul Verma", email: "rahul.verma@example.com", phone: "" },
-      authorised: [{ id: uid(), name: "Dr. Anita Rao", email: "anita.rao@example.com", relation: "Caregiver" }],
-    });
-    saveContacts();
-  }
-  const weights = { F0: 14, F1: 5, F2: 3, F3: 3, F4: 3, F5: 2, F6: 3, F7: 2, F8: 3, F9: 3 };
-  const bag = Object.entries(weights).flatMap(([k, w]) => Array(w).fill(k));
-  const n = 42;
-  for (let i = 0; i < n; i++) {
-    const code = bag[Math.floor(Math.random() * bag.length)];
-    const s = D.samples.find((x) => x.category === code);
-    const d = daysAgo(Math.floor(Math.random() * 21)); d.setHours(8 + Math.floor(Math.random() * 14), Math.floor(Math.random() * 60));
-    const tr = normalise({ transcript: s.transcript, summary: s.summary, duration: s.duration + Math.round(Math.random() * 40 - 20), language: "en" });
-    const rec = buildRecord({ token: makeToken(d), createdAt: d.toISOString(), fileName: `call-${localDate(d)}-${i + 1}.mp3`, tr,
-      cls: { category: code, confidence: Math.min(0.99, Math.max(0.52, s.confidence + (Math.random() * 0.16 - 0.08))), by: "sample" }, source: "sample" });
-    rec.notifications = planAlerts(rec).map((x) => ({ ...x, status: x.status === "pending" ? (x.channel === "in-app" ? "delivered" : Math.random() < 0.75 ? "sent" : "queued") : x.status, at: d.toISOString() }));
-    if (Math.random() < 0.15) rec.userLabels.push(rec.isFraud ? "reported" : "family");
-    await idb.put(rec); S.calls.push(rec);
-  }
-  S.calls.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  paintChrome(); toast(`Loaded ${n} sample calls`); route();
-}
 
 /* ============================== accounts: sign up + log in ==============================
    No server: accounts live in this browser. Passwords are never stored, only a salted
@@ -1419,6 +1336,8 @@ async function startApp(user, fresh = false) {
   if (!S.contacts.user.name && !S.contacts.user.email) { S.contacts.user = { name: user.name, email: user.email, phone: "" }; saveContacts(); }
   S.filters = LS.get("filters", null);
   try { S.calls = (await idb.all()).sort((a, b) => b.createdAt.localeCompare(a.createdAt)); } catch { S.calls = []; }
+  const fake = S.calls.filter((c) => c.source === "sample" || c.source === "demo");   // simulated calls from the old demo mode
+  if (fake.length) { for (const c of fake) { await idb.del(c.id).catch(() => {}); await idb.delAudio(c.id).catch(() => {}); } S.calls = S.calls.filter((c) => !fake.includes(c)); }
   try { S.dir = (await idb.kvGet("dir")) || null; } catch { S.dir = null; }
   $("#auth").hidden = true; $("#appRoot").hidden = false;
   $("#userChip").innerHTML = `${user.picture ? `<img class="avatar" src="${esc(user.picture)}" alt="" referrerpolicy="no-referrer">` : `<span class="avatar">${esc(initials(user.name))}</span>`}
