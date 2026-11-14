@@ -11,10 +11,9 @@ It is a static single-page app (HTML/CSS/JS, no build step), hosted on GitHub Pa
 Nobody sees the dashboard without logging in.
 
 - **Sign up, two ways:**
-  - **Sign up with email:** full name, email and password. A user ID is created from the email (e.g. `sumit.saurabh`).
-  - **Create a user ID:** full name, a unique **user ID** (3–20 characters: letters, numbers, `.` or `_`), an optional email, and a password.
-  - Passwords need 8+ characters with a letter and a number, entered twice to confirm.
-- **Log in:** user ID or email, plus password. You can stay logged in on the device for up to 30 days.
+  - **Continue with Google:** one tap using the Google account already signed in on the device (Google One Tap and the Sign in with Google button). No new password is needed, and the user ID comes from the Gmail address.
+  - **Register a user ID:** full name, a unique **user ID** (3–20 characters: letters, numbers, `.` or `_`), an optional email, and a password (8+ characters with a letter and a number, entered twice).
+- **Log in:** Continue with Google, or user ID / email plus password. Google users can also set a password in Settings. You can stay logged in on the device for up to 30 days.
 - **Per-user data:** each account has its own calls, contacts, settings and history.
 - **Settings → Account:** change password, log out.
 - **Security:** passwords are never stored. Only a salted PBKDF2-SHA-256 hash (210,000 rounds) is kept, compared in constant time.
@@ -117,3 +116,9 @@ The default mode. No audio leaves the browser: the transcriber and classifier re
 ```bash
 cd docs && python3 -m http.server 8000   # open http://localhost:8000
 ```
+
+## Switching on Google sign-in
+
+1. In [Google Cloud Console](https://console.cloud.google.com/apis/credentials), create an **OAuth client ID** of type **Web application**.
+2. Under **Authorised JavaScript origins**, add `https://sumit2015saurabh-tech.github.io` (and `http://localhost:8000` for local testing).
+3. Paste the client ID into `docs/assets/config.js` as `googleClientId`, then push.

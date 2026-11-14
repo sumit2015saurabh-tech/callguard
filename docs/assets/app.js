@@ -1102,10 +1102,11 @@ VIEWS.settings = (root) => {
           <div class="row"><span class="avatar" style="width:40px;height:40px">${esc(initials(S.user.name))}</span>
             <div><h3>${esc(S.user.name)}</h3><div class="faint" style="font-size:12.5px">@${esc(S.user.id)}${S.user.email ? ` · ${esc(S.user.email)}` : ""} · member since ${fmtDate(S.user.createdAt)}</div></div>
             <div class="spacer"></div><button class="btn btn-sm" id="logout2">${icon("logout")}Log out</button></div>
-          <form class="form-grid" id="pwForm" style="grid-template-columns:1fr 1fr auto;align-items:end">
-            <div class="field"><label for="pwCur">Current password</label><input class="input" id="pwCur" type="password" autocomplete="current-password" required></div>
-            <div class="field"><label for="pwNew">New password</label><input class="input" id="pwNew" type="password" autocomplete="new-password" required></div>
-            <button class="btn">Change password</button></form>
+          ${S.user.googleSub ? `<div class="row faint" style="font-size:12.5px">${GOOGLE_G} Signed in with Google${S.user.hash ? " · password also set" : ""}</div>` : ""}
+          <form class="form-grid" id="pwForm" style="grid-template-columns:${S.user.hash ? "1fr 1fr auto" : "1fr auto"};align-items:end">
+            ${S.user.hash ? `<div class="field"><label for="pwCur">Current password</label><input class="input" id="pwCur" type="password" autocomplete="current-password" required></div>` : ""}
+            <div class="field"><label for="pwNew">${S.user.hash ? "New password" : "Set a password (to also log in with your user ID)"}</label><input class="input" id="pwNew" type="password" autocomplete="new-password" required></div>
+            <button class="btn">${S.user.hash ? "Change password" : "Set password"}</button></form>
         </div>
         <div class="card card-pad stack">
           <h3>Workspace</h3>
@@ -1131,7 +1132,7 @@ VIEWS.settings = (root) => {
   $("#logout2").onclick = () => auth.logout();
   $("#pwForm").onsubmit = async (e) => {
     e.preventDefault();
-    try { await auth.changePassword(S.user.id, $("#pwCur").value, $("#pwNew").value); e.target.reset(); toast("Password changed"); }
+    try { await auth.changePassword(S.user.id, $("#pwCur")?.value || "", $("#pwNew").value); S.user = auth.users()[S.user.id]; toast("Password saved"); VIEWS.settings(root); }
     catch (ex) { toast(ex.message, "alert"); }
   };
   $("#modeSeg").onclick = (e) => {
@@ -1248,28 +1249,24 @@ const auth = {
     while (users[id]) id = `${base}${n++}`;
     return id;
   },
-  async signup({ name, email, id, password, method }) {
+  async signup({ name, email, id, password }) {
     email = String(email || "").trim();
     id = String(id || "").trim().toLowerCase();
     if (!name.trim()) throw new Error("Enter your full name.");
-    if (method === "email") {
-      if (!isEmail(email)) throw new Error("Enter a valid email address.");
-      id = this.idFromEmail(email);
-    } else {
-      if (!/^[a-z0-9_.]{3,20}$/.test(id)) throw new Error("User ID: 3–20 characters, letters, numbers, dot or underscore.");
-      if (email && !isEmail(email)) throw new Error("That email address doesn't look right (or leave it empty).");
-    }
+    if (!/^[a-z0-9_.]{3,20}$/.test(id)) throw new Error("User ID: 3–20 characters, letters, numbers, dot or underscore.");
+    if (email && !isEmail(email)) throw new Error("That email address doesn't look right (or leave it empty).");
     const pp = this.passwordProblem(password); if (pp) throw new Error(pp);
     const users = this.users();
     if (users[id]) throw new Error("That user ID is taken. Try another.");
     if (email && Object.values(users).some((x) => x.email && x.email.toLowerCase() === email.toLowerCase())) throw new Error("An account with this email already exists. Log in instead.");
     const salt = this.b64(crypto.getRandomValues(new Uint8Array(16)));
-    users[id] = { id, name: name.trim(), email, method: method === "email" ? "email" : "userid", salt, iter: 210000, hash: await this.hash(password, salt), createdAt: new Date().toISOString() };
+    users[id] = { id, name: name.trim(), email, method: "userid", salt, iter: 210000, hash: await this.hash(password, salt), createdAt: new Date().toISOString() };
     this.saveUsers(users);
     return users[id];
   },
   async login(login, password) {
     const u = this.find(login);
+    if (u && !u.hash) throw new Error("This account uses Google. Tap \"Continue with Google\" above (or set a password in Settings after signing in).");
     // same work whether or not the user exists, so the response time doesn't reveal valid IDs
     const h = await this.hash(password, u ? u.salt : "AAAAAAAAAAAAAAAAAAAAAA==", u ? u.iter : 210000);
     if (!u || !this.same(h, u.hash)) throw new Error("User ID / email or password is incorrect.");
@@ -1278,7 +1275,7 @@ const auth = {
   },
   async changePassword(id, current, next) {
     const users = this.users(), u = users[id];
-    if (!this.same(await this.hash(current, u.salt, u.iter), u.hash)) throw new Error("Current password is incorrect.");
+    if (u.hash && !this.same(await this.hash(current, u.salt, u.iter), u.hash)) throw new Error("Current password is incorrect.");
     const pp = this.passwordProblem(next); if (pp) throw new Error(pp);
     u.salt = this.b64(crypto.getRandomValues(new Uint8Array(16))); u.iter = 210000; u.hash = await this.hash(next, u.salt);
     this.saveUsers(users);
@@ -1295,10 +1292,67 @@ const auth = {
       return this.users()[s.id] || null;
     } catch { return null; }
   },
-  logout() { GLS.del("session"); location.hash = ""; location.reload(); },
+  logout() { try { window.google?.accounts?.id?.disableAutoSelect(); } catch { /* ignore */ } GLS.del("session"); location.hash = ""; location.reload(); },
 };
 
-function authScreen(mode = "login", note = "", method = "email") {
+/* ---------- Google sign-in: uses the Google account already signed in on the device ---------- */
+const google = {
+  clientId: (window.CG_CONFIG && window.CG_CONFIG.googleClientId) || "",
+  loading: null,
+  load() {
+    if (window.google?.accounts?.id) return Promise.resolve();
+    return this.loading || (this.loading = new Promise((res, rej) => {
+      const sc = document.createElement("script");
+      sc.src = "https://accounts.google.com/gsi/client"; sc.async = true; sc.defer = true;
+      sc.onload = () => res(); sc.onerror = () => rej(new Error("Could not reach Google. Check your connection."));
+      document.head.appendChild(sc);
+    }));
+  },
+  decode(jwt) {
+    const part = jwt.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+    const json = decodeURIComponent(atob(part).split("").map((c) => "%" + ("00" + c.charCodeAt(0).toString(16)).slice(-2)).join(""));
+    return JSON.parse(json);
+  },
+  /** Turn Google's ID token into a CallGuard account (create on first use, link by email if one exists). */
+  accountFrom(credential) {
+    const t = this.decode(credential);
+    if (t.aud !== this.clientId) throw new Error("Google sign-in was issued for a different app.");
+    if (!["accounts.google.com", "https://accounts.google.com"].includes(t.iss)) throw new Error("Unexpected sign-in issuer.");
+    if (!t.exp || t.exp * 1000 < Date.now()) throw new Error("Google sign-in expired. Try again.");
+    if (!t.email || t.email_verified === false) throw new Error("Your Google email is not verified.");
+    const users = auth.users();
+    let u = Object.values(users).find((x) => x.googleSub === t.sub)
+         || Object.values(users).find((x) => x.email && x.email.toLowerCase() === t.email.toLowerCase());
+    if (u) { Object.assign(users[u.id], { googleSub: t.sub, picture: t.picture || users[u.id].picture || "", lastLogin: new Date().toISOString() }); }
+    else {
+      const id = auth.idFromEmail(t.email);
+      users[id] = { id, name: t.name || t.email.split("@")[0], email: t.email, method: "google", googleSub: t.sub,
+                    picture: t.picture || "", createdAt: new Date().toISOString(), lastLogin: new Date().toISOString() };
+      u = users[id];
+    }
+    const isNew = !users[u.id].lastLogin || users[u.id].createdAt === users[u.id].lastLogin;
+    auth.saveUsers(users);
+    return { ...users[u.id], _new: isNew };
+  },
+  async mount(el, mode, onDone, onError) {
+    if (!this.clientId) { el.innerHTML = `<button type="button" class="btn g-btn" id="gFallback">${GOOGLE_G}Continue with Google</button>`;
+      $("#gFallback").onclick = () => onError("Google sign-in is not switched on for this site yet. The site owner needs to add a Google Client ID."); return; }
+    el.innerHTML = `<div class="g-loading"><span class="spin"></span> Loading Google…</div>`;
+    try { await this.load(); } catch (e) { el.innerHTML = ""; onError(e.message); return; }
+    window.google.accounts.id.initialize({
+      client_id: this.clientId, auto_select: false, cancel_on_tap_outside: true, use_fedcm_for_prompt: true,
+      context: mode === "signup" ? "signup" : "signin",
+      callback: (resp) => { try { onDone(this.accountFrom(resp.credential)); } catch (e) { onError(e.message); } },
+    });
+    el.innerHTML = "";
+    window.google.accounts.id.renderButton(el, { type: "standard", theme: "outline", size: "large", shape: "pill",
+      text: mode === "signup" ? "signup_with" : "continue_with", logo_alignment: "center", width: Math.min(380, el.clientWidth || 380) });
+    window.google.accounts.id.prompt();    // One Tap: "Continue as <name>" with the device's Google account
+  },
+};
+const GOOGLE_G = `<svg viewBox="0 0 48 48" style="width:18px;height:18px"><path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.2 9.1 3.6l6.8-6.8C35.8 2.4 30.3 0 24 0 14.6 0 6.6 5.4 2.7 13.3l7.9 6.1C12.5 13.6 17.8 9.5 24 9.5z"/><path fill="#4285F4" d="M46.1 24.5c0-1.6-.1-3.1-.4-4.5H24v9h12.4c-.5 2.9-2.2 5.3-4.6 6.9l7.4 5.7c4.3-4 6.9-9.9 6.9-17.1z"/><path fill="#FBBC05" d="M10.6 28.6c-.5-1.4-.8-3-.8-4.6s.3-3.2.8-4.6l-7.9-6.1C1 16.6 0 20.2 0 24s1 7.4 2.7 10.7l7.9-6.1z"/><path fill="#34A853" d="M24 48c6.5 0 11.9-2.1 15.9-5.8l-7.4-5.7c-2.1 1.4-4.8 2.3-8.5 2.3-6.2 0-11.5-4.1-13.4-9.9l-7.9 6.1C6.6 42.6 14.6 48 24 48z"/></svg>`;
+
+function authScreen(mode = "login", note = "") {
   const box = $("#auth");
   box.hidden = false; $("#appRoot").hidden = true;
   document.title = mode === "login" ? "Log in · CallGuard" : "Sign up · CallGuard";
@@ -1307,22 +1361,17 @@ function authScreen(mode = "login", note = "", method = "email") {
       <div class="brand" style="padding:0 0 14px"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32"><rect width="32" height="32" rx="9"/><path d="M16 6l8 3v6c0 5-3.4 8.6-8 10-4.6-1.4-8-5-8-10V9z"/></svg></span>
         <div><div class="brand-name">CallGuard</div><div class="brand-sub">Scam-call protection</div></div></div>
       <h2>${mode === "login" ? "Welcome back" : "Create your account"}</h2>
-      <p class="muted" style="margin:4px 0 16px">${mode === "login" ? "Log in with your user ID or email, and your password." : "Choose how you want to sign up."}</p>
-      ${mode === "signup" ? `<div class="seg auth-seg" id="methodSeg" style="margin-bottom:16px">
-        <button type="button" data-method="email" class="${method === "email" ? "on" : ""}">${icon("mail")}Sign up with email</button>
-        <button type="button" data-method="userid" class="${method === "userid" ? "on" : ""}">${icon("users")}Create a user ID</button></div>` : ""}
+      <p class="muted" style="margin:4px 0 16px">${mode === "login" ? "Continue with your Google account, or log in with your user ID and password." : "Sign up in one tap with the Google account on this device, or register a user ID."}</p>
       ${note ? `<div class="banner" style="margin-bottom:14px">${icon("check")}<div>${note}</div></div>` : ""}
       <div class="banner warn" id="authErr" hidden style="margin-bottom:14px"></div>
+      <div id="gBox" class="g-box"></div>
+      <div class="or"><span>or ${mode === "login" ? "log in with user ID" : "register with a user ID"}</span></div>
       <form id="authForm" class="stack" style="gap:14px" novalidate>
         ${mode === "signup" ? `
           <div class="field"><label for="suName">Full name</label><input class="input" id="suName" autocomplete="name" required></div>
-          ${method === "email" ? `
-          <div class="field"><label for="suEmail">Email</label><input class="input" id="suEmail" type="email" autocomplete="email" required placeholder="you@example.com">
-            <span class="hint" id="idPreview">You'll log in with this email. A user ID is created for you too.</span></div>`
-          : `
           <div class="field"><label for="suId">User ID</label><input class="input" id="suId" autocomplete="username" required placeholder="e.g. sumit_s" maxlength="20">
             <span class="hint">3–20 characters: letters, numbers, dot or underscore. You'll log in with this.</span></div>
-          <div class="field"><label for="suEmail">Email <span class="faint">(optional)</span></label><input class="input" id="suEmail" type="email" autocomplete="email" placeholder="Lets you log in with email too"></div>`}
+          <div class="field"><label for="suEmail">Email <span class="faint">(optional)</span></label><input class="input" id="suEmail" type="email" autocomplete="email" placeholder="you@example.com"></div>
           <div class="field"><label for="suPw">Password</label><input class="input" id="suPw" type="password" autocomplete="new-password" required>
             <span class="hint">At least 8 characters, with a letter and a number.</span></div>
           <div class="field"><label for="suPw2">Confirm password</label><input class="input" id="suPw2" type="password" autocomplete="new-password" required></div>`
@@ -1335,31 +1384,24 @@ function authScreen(mode = "login", note = "", method = "email") {
       <div class="auth-switch">${mode === "login"
         ? `New to CallGuard? <a href="#" data-mode="signup">Sign up</a>`
         : `Already have an account? <a href="#" data-mode="login">Log in</a>`}</div>
-      <div class="faint" style="font-size:12px;margin-top:14px;text-align:center">Accounts and call history are stored securely in this browser on this device.</div>
+      <div class="faint" style="font-size:12px;margin-top:14px;text-align:center">Your call history is stored privately in this browser on this device.</div>
     </div>`;
   $$("[data-mode]", box).forEach((a) => a.onclick = (e) => { e.preventDefault(); authScreen(a.dataset.mode); });
-  $$("[data-method]", box).forEach((b) => b.onclick = () => {
-    const keep = { name: $("#suName")?.value || "", email: $("#suEmail")?.value || "" };
-    authScreen("signup", "", b.dataset.method);
-    $("#suName").value = keep.name; $("#suEmail").value = keep.email;
-  });
-  const ip = $("#idPreview");
-  if (ip) $("#suEmail").addEventListener("input", (e) => {
-    ip.innerHTML = isEmail(e.target.value) ? `You'll log in with this email or your user ID <b>${esc(auth.idFromEmail(e.target.value))}</b>.` : "You'll log in with this email. A user ID is created for you too.";
-  });
   const err = (m) => { const e = $("#authErr"); e.hidden = !m; e.innerHTML = m ? `${icon("alert")}<div>${esc(m)}</div>` : ""; };
-  (mode === "login" ? $("#liId") : $("#suName")).focus();
+  google.mount($("#gBox"), mode, async (u) => {
+    err(""); auth.startSession(u, true);
+    await startApp(u, true);
+    if (u._new) toast(`Account created with ${u.email}`, "check");
+  }, err);
   $("#authForm").onsubmit = async (e) => {
     e.preventDefault(); err("");
     const btn = $("#authSubmit"); btn.disabled = true; const label = btn.textContent; btn.innerHTML = `<span class="spin"></span>`;
     try {
       if (mode === "signup") {
         if ($("#suPw").value !== $("#suPw2").value) throw new Error("The two passwords don't match.");
-        const u = await auth.signup({ name: $("#suName").value, email: $("#suEmail").value, id: $("#suId")?.value, password: $("#suPw").value, method });
-        authScreen("login", method === "email"
-          ? `Account created. Log in with <b>${esc(u.email)}</b> or your user ID <b>${esc(u.id)}</b>.`
-          : `Account <b>${esc(u.id)}</b> created. Log in with your user ID and password.`);
-        $("#liId").value = method === "email" ? u.email : u.id; $("#liPw").focus();
+        const u = await auth.signup({ name: $("#suName").value, email: $("#suEmail").value, id: $("#suId").value, password: $("#suPw").value });
+        authScreen("login", `Account <b>${esc(u.id)}</b> created. Log in with your user ID and password.`);
+        $("#liId").value = u.id; $("#liPw").focus();
         return;
       }
       const u = await auth.login($("#liId").value, $("#liPw").value);
@@ -1379,7 +1421,7 @@ async function startApp(user, fresh = false) {
   try { S.calls = (await idb.all()).sort((a, b) => b.createdAt.localeCompare(a.createdAt)); } catch { S.calls = []; }
   try { S.dir = (await idb.kvGet("dir")) || null; } catch { S.dir = null; }
   $("#auth").hidden = true; $("#appRoot").hidden = false;
-  $("#userChip").innerHTML = `<span class="avatar">${esc(initials(user.name))}</span>
+  $("#userChip").innerHTML = `${user.picture ? `<img class="avatar" src="${esc(user.picture)}" alt="" referrerpolicy="no-referrer">` : `<span class="avatar">${esc(initials(user.name))}</span>`}
     <div style="min-width:0;flex:1"><div style="font-weight:650;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(user.name)}</div>
     <div class="faint" style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">@${esc(user.id)}</div></div>
     <button class="icon-btn" id="logoutBtn" title="Log out" aria-label="Log out">${icon("logout")}</button>`;
