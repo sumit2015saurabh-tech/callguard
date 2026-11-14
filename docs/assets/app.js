@@ -109,7 +109,7 @@ const idb = (() => {
 
 const DEFAULT_SETTINGS = {
   workspace: "My workspace", plan: "pro",
-  transcriberUrl: (window.CG_CONFIG && window.CG_CONFIG.serviceUrl) || "", notifierUrl: "", apiKey: "", timeoutSec: 120,
+  transcriberUrl: "", notifierUrl: "", apiKey: "", timeoutSec: 300,
   browserNotify: false, alertsSeenAt: 0,
 };
 const DEFAULT_CONTACTS = {
@@ -148,6 +148,9 @@ function normCategory(v) {
 
 function normalise(raw) {
   raw = raw || {};
+  for (const k of ["result", "data", "output", "response"]) if (raw[k] && typeof raw[k] === "object" && !Array.isArray(raw[k])) raw = { ...raw[k], ...raw };
+  if (raw.transcript && typeof raw.transcript === "object") raw = { ...raw, transcript: raw.transcript.text || raw.transcript.full_text || "" };
+  if (!raw.transcript && !raw.text && Array.isArray(raw.segments)) raw = { ...raw, transcript: raw.segments.map((x) => (x.speaker ? `${x.speaker}: ` : "") + (x.text || "").trim()).join("\n") };
   const pick = (...ks) => { for (const k of ks) if (raw[k] != null && raw[k] !== "") return raw[k]; return undefined; };
   let conf = pick("confidence", "score", "probability", "prob");
   if (conf != null) { conf = Number(conf); if (conf > 1) conf /= 100; }
@@ -170,9 +173,10 @@ function toLabels(v) {
   return [...new Set(arr.map((x) => String(typeof x === "object" && x ? (x.name || x.label || x.tag || "") : x).trim()).filter(Boolean))].slice(0, 30);
 }
 
+const CFG = Object.assign({ serviceUrl: "", audioField: "audio", healthUrl: "", authCheckUrl: "" }, window.CG_CONFIG || {});
 function authHeaders() {
-  const k = S.settings.apiKey;
-  return k ? { Authorization: `Bearer ${k}`, "X-API-Key": k } : {};
+  const k = String(S.settings.apiKey || "").trim();
+  return k ? { Authorization: `Bearer ${k}` } : {};
 }
 
 class ServiceError extends Error {
@@ -189,14 +193,17 @@ async function fetchJSON(url, opts) {
   } catch (e) {
     if (e.name === "AbortError") throw new ServiceError("No response from the microservice.", `It did not answer within ${secs} seconds. It may be overloaded or the audio may be too long. You can raise the timeout in Settings.`);
     if (!navigator.onLine) throw new ServiceError("You're offline.", "Check your internet connection and try again.");
-    throw new ServiceError("Couldn't reach the microservice.", `No response from ${url}. It may be down, the URL may be wrong, or it doesn't allow requests from this website (CORS).`);
+    let up = false;
+    try { await fetch(CFG.healthUrl || new URL("/healthz", url).href, { mode: "no-cors", cache: "no-store" }); up = true; } catch { up = false; }
+    if (up) throw new ServiceError("The microservice blocked this website (CORS).", `The service at ${new URL(url).origin} is running but doesn't allow requests from ${location.origin}. Its owner must allow this origin in the service's CORS settings, including OPTIONS requests without a token.`);
+    throw new ServiceError("Couldn't reach the microservice.", `No response from ${new URL(url).origin}. It may be down or starting up (free hosting can take about a minute to wake). Try again shortly.`);
   } finally { clearTimeout(t); }
   let text = "";
   try { text = await r.text(); } catch { text = ""; }
   if (!r.ok) {
     const why = {
       400: "It rejected the request (400 Bad Request). The audio format may not be supported.",
-      401: "It rejected the API key (401 Unauthorized). Check the API key in Settings.",
+      401: "It did not accept your API token (401 Unauthorized). Check the token in Settings → Microservice.",
       403: "Access denied (403 Forbidden). Check the API key in Settings.",
       404: "The URL was not found (404). Check the microservice URL in Settings.",
       405: "That URL doesn't accept uploads (405 Method Not Allowed).",
@@ -206,7 +213,9 @@ async function fetchJSON(url, opts) {
       422: "The microservice couldn't process this audio (422).",
       429: "Too many requests (429). Wait a moment and try again.",
     }[r.status] || (r.status >= 500 ? `The microservice had an internal error (${r.status}). Try again later.` : `It answered with an error (HTTP ${r.status}).`);
-    const msg = text ? ` Message from the service: "${text.replace(/\s+/g, " ").slice(0, 200)}"` : "";
+    let detail = text, rid = "";
+    try { const j = JSON.parse(text); detail = typeof j.detail === "string" ? j.detail : j.message || j.error || JSON.stringify(j.detail || j); rid = j.request_id || ""; } catch { /* plain text */ }
+    const msg = (detail ? ` Service says: "${String(detail).replace(/\s+/g, " ").slice(0, 200)}"` : "") + (rid ? ` (request ID ${rid})` : "");
     throw new ServiceError("The microservice returned an error.", why + msg);
   }
   if (!text.trim()) throw new ServiceError("Empty response from the microservice.", "It answered but sent no data. Expected JSON with transcript, summary, category and labels.");
@@ -219,8 +228,9 @@ const services = {
   async analyse(blob, fileName, token) {
     if (!blob) throw new ServiceError("No audio.", "Upload an audio file or record a call first.");
     if (!S.settings.transcriberUrl) throw new ServiceError("Microservice not connected.", "Add its URL in Settings → Microservice.");
+    if (!String(S.settings.apiKey || "").trim()) throw new ServiceError("API token missing.", "The microservice only accepts requests with your API token. Paste it in Settings → Microservice.");
     const fd = new FormData();
-    fd.append("file", blob, fileName || "call.webm");
+    fd.append(CFG.audioField || "audio", blob, fileName || "call.webm");
     fd.append("call_token", token);
     const raw = await fetchJSON(S.settings.transcriberUrl, { method: "POST", body: fd, headers: authHeaders() });
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new ServiceError("Unreadable response from the microservice.", "Expected a JSON object.");
@@ -736,7 +746,7 @@ async function runPipeline(blob, fileName) {
         <div style="flex:1;min-width:0"><h3>${esc(title)}</h3><div class="muted" style="margin-top:4px">${esc(detail)}</div>
           <div class="faint" style="font-size:12px;margin-top:8px">No result was saved and no alerts were sent.</div>
           <div class="row" style="margin-top:12px">${canRetry ? `<button class="btn btn-primary btn-sm" id="retryBtn">Try again</button>` : ""}
-            ${/connected|URL|API key|CORS|timeout/i.test(detail + title) ? `<a class="btn btn-sm" href="#/settings">Open Settings</a>` : ""}</div></div></div></div>`;
+            ${/connected|URL|token|CORS|timeout/i.test(detail + title) ? `<a class="btn btn-sm" href="#/settings">Open Settings</a>` : ""}</div></div></div></div>`;
     const rb = $("#retryBtn"); if (rb) rb.onclick = () => runPipeline(blob, fileName);
   } finally { if (btn) btn.disabled = false; }
 }
@@ -1069,16 +1079,17 @@ VIEWS.settings = (root) => {
   root.innerHTML = `
     <div class="grid g-2">
       <div class="card card-pad stack">
-        <div><h3>Microservice</h3><div class="faint" style="font-size:12.5px;margin-top:2px">Every call is sent here. The fraud category always comes from its response.</div></div>
-        <div class="field"><label for="sTr">Microservice URL</label><input class="input" id="sTr" data-k="transcriberUrl" placeholder="https://your-host/analyse" value="${esc(st.transcriberUrl)}">
-          <span class="hint">POST multipart <span class="mono">file</span> + <span class="mono">call_token</span>. Must return JSON with <span class="mono">transcript</span>, <span class="mono">summary</span> and <span class="mono">category</span> (F0–F9), optionally <span class="mono">confidence</span>.</span></div>
+        <div><h3>Microservice</h3><div class="faint" style="font-size:12.5px;margin-top:2px">Every call is sent here with your API token. The service checks the token, and the fraud category and labels come from its response.</div></div>
+        <div class="field"><label for="sTr">Microservice URL</label><input class="input" id="sTr" data-k="transcriberUrl" placeholder="https://your-host/v1/audio/transcribe" value="${esc(st.transcriberUrl)}">
+          <span class="hint">POST multipart <span class="mono">${esc(CFG.audioField)}</span> + <span class="mono">call_token</span>, header <span class="mono">Authorization: Bearer &lt;token&gt;</span>.</span></div>
+        <div class="field"><label for="sKey">API token</label><input class="input" id="sKey" type="password" data-k="apiKey" value="${esc(st.apiKey)}" autocomplete="off" spellcheck="false" placeholder="Paste the token issued by the service">
+          <span class="hint">Required. Saved only in this browser, for your account. It's sent only to the microservice and never included in backups.</span></div>
         <div class="field"><label for="sNo">Notifier URL (email / push, optional)</label><input class="input" id="sNo" data-k="notifierUrl" placeholder="https://your-host/notify" value="${esc(st.notifierUrl)}">
           <span class="hint">POST JSON <span class="mono">{to, role, channel, subject, body, call_token, category}</span> per alert. Without it, emails go to the outbox.</span></div>
         <div class="form-grid">
-          <div class="field"><label for="sKey">API key (sent as Bearer)</label><input class="input" id="sKey" type="password" data-k="apiKey" value="${esc(st.apiKey)}" autocomplete="off"></div>
           <div class="field"><label for="sTo">Timeout (seconds)</label><input class="input" id="sTo" type="number" min="10" max="900" data-k="timeoutSec" value="${esc(st.timeoutSec)}"></div>
         </div>
-        <div class="row"><button class="btn" id="testConn">Test microservice</button><span class="faint" id="testOut" style="font-size:12.5px"></span></div>
+        <div class="row"><button class="btn" id="testConn">Test connection &amp; token</button><span class="faint" id="testOut" style="font-size:12.5px"></span></div>
       </div>
       <div class="stack">
         <div class="card card-pad stack">
@@ -1132,10 +1143,25 @@ VIEWS.settings = (root) => {
   };
   $("#testConn").onclick = async () => {
     const out = $("#testOut");
-    if (!st.transcriberUrl) { out.textContent = "Set the URL first."; return; }
-    out.textContent = "Checking…";
-    try { const r = await fetch(st.transcriberUrl, { method: "OPTIONS", headers: authHeaders() }); out.textContent = `Reachable (HTTP ${r.status}).`; }
-    catch (e) { out.textContent = `Not reachable from the browser: ${e.message}. Check the URL and that the service allows CORS from this site.`; }
+    const say = (ok, m) => { out.innerHTML = `<span class="status ${ok ? "good" : "critical"}">${icon(ok ? "check" : "alert")}${esc(m)}</span>`; };
+    if (!st.transcriberUrl) return say(false, "Set the microservice URL first.");
+    out.innerHTML = `<span class="row"><span class="spin"></span>Checking… (a sleeping service can take a minute to wake)</span>`;
+    const origin = new URL(st.transcriberUrl).origin;
+    const health = CFG.healthUrl || origin + "/healthz";
+    // 1) is it running?
+    let reachable = false;
+    try { await fetch(health, { mode: "no-cors", cache: "no-store" }); reachable = true; } catch { reachable = false; }
+    if (!reachable) return say(false, `Can't reach ${origin}. It may be down or the URL is wrong.`);
+    // 2) does it let this website call it?
+    try { await fetch(health, { cache: "no-store" }); }
+    catch { return say(false, `Service is running, but it blocks requests from ${location.origin} (CORS). Its owner must allow this origin.`); }
+    // 3) is the token accepted? (an authenticated GET; 401 = bad token)
+    if (!String(st.apiKey || "").trim()) return say(false, "Service reachable. Now paste your API token.");
+    try {
+      const r = await fetch(CFG.authCheckUrl || origin + "/health", { headers: authHeaders(), cache: "no-store" });
+      if (r.status === 401 || r.status === 403) return say(false, "Service reachable, but it rejected your API token.");
+      return say(true, r.ok ? "Connected. Token accepted." : `Connected (HTTP ${r.status}). Token not rejected.`);
+    } catch { return say(false, "Service reachable, but the token check was blocked (CORS on authenticated requests)."); }
   };
   const pd = $("#pickDir"); if (pd) pd.onclick = async () => { try { await folder.connect(); VIEWS.settings(root); } catch (e) { if (e.name !== "AbortError") toast(e.message, "alert"); } };
   const sn = $("#syncNow"); if (sn) sn.onclick = async () => { try { await folder.syncAll(); } catch (e) { toast(e.message, "alert"); } };
@@ -1356,6 +1382,8 @@ function authScreen(mode = "login", note = "") {
 async function startApp(user, fresh = false) {
   S.user = user; NS = user.id;
   S.settings = { ...DEFAULT_SETTINGS, ...LS.get("settings", {}) };
+  if (!S.settings.transcriberUrl && CFG.serviceUrl) S.settings.transcriberUrl = CFG.serviceUrl;
+  if ((S.settings.timeoutSec || 0) < 300) S.settings.timeoutSec = 300;   // transcription + cold start can be slow
   S.contacts = { ...JSON.parse(JSON.stringify(DEFAULT_CONTACTS)), ...LS.get("contacts", {}) };
   if (!S.contacts.user.name && !S.contacts.user.email) { S.contacts.user = { name: user.name, email: user.email, phone: "" }; saveContacts(); }
   S.filters = LS.get("filters", null);

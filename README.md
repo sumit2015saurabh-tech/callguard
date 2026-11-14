@@ -59,15 +59,33 @@ Data stays in the user's browser (IndexedDB plus the optional local folder). Not
 
 ## Connecting your microservice
 
-The fraud category always comes from **your microservice**. The dashboard never guesses or simulates it, and users can't change it. Without a microservice URL, calls can't be analysed.
+The fraud category and labels always come from **your microservice**. The dashboard never guesses or simulates them.
 
-Set the URL in `docs/assets/config.js` (`serviceUrl`) so every user gets it, or per user in **Settings → Microservice**. The optional API key is sent as `Authorization: Bearer <key>` and `X-API-Key`. The service must allow CORS from the dashboard's origin.
+**Default service:** `https://call-audio-api-c3qg.onrender.com/v1/audio/transcribe` (set in `docs/assets/config.js`).
+
+### Token verification
+
+Each user pastes the **API token issued by the service** in **Settings → Microservice**. It is saved only in their browser, under their account, and never included in backups. Every request sends `Authorization: Bearer <token>`. **The service verifies the token** and answers `401` if it's missing or wrong, and the dashboard shows that clearly. Without a token, the dashboard refuses to send audio. **Test connection & token** checks three things: the service is up (`/healthz`), the browser is allowed to call it (CORS), and the token is accepted (`/health`).
+
+### Required on the service: CORS
+
+The service must allow the dashboard's origin, or browsers block every request:
+
+```python
+from fastapi.middleware.cors import CORSMiddleware
+app.add_middleware(CORSMiddleware,
+    allow_origins=["https://sumit2015saurabh-tech.github.io"],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"])
+```
+
+Add this middleware **after** the token-check middleware, so it wraps it and answers `OPTIONS` preflights before any token check. Otherwise preflights get `401` and the browser blocks the call.
 
 ### Microservice: `POST <serviceUrl>`, `multipart/form-data`
 
 | field | value |
 |---|---|
-| `file` | the uploaded or recorded audio |
+| `audio` | the uploaded or recorded audio (field name set by `audioField` in config) |
 | `call_token` | CallGuard's token for this call |
 
 Response JSON. `category` is **required**, plus `transcript` or `summary`. `labels` are shown exactly as sent (users never add labels):
