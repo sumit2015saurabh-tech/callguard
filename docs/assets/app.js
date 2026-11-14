@@ -1254,7 +1254,7 @@ const auth = {
     id = String(id || "").trim().toLowerCase();
     if (!name.trim()) throw new Error("Enter your full name.");
     if (!/^[a-z0-9_.]{3,20}$/.test(id)) throw new Error("User ID: 3–20 characters, letters, numbers, dot or underscore.");
-    if (email && !isEmail(email)) throw new Error("That email address doesn't look right (or leave it empty).");
+    if (!isEmail(email)) throw new Error("Enter a valid email address.");
     const pp = this.passwordProblem(password); if (pp) throw new Error(pp);
     const users = this.users();
     if (users[id]) throw new Error("That user ID is taken. Try another.");
@@ -1371,7 +1371,7 @@ function authScreen(mode = "login", note = "") {
           <div class="field"><label for="suName">Full name</label><input class="input" id="suName" autocomplete="name" required></div>
           <div class="field"><label for="suId">User ID</label><input class="input" id="suId" autocomplete="username" required placeholder="e.g. sumit_s" maxlength="20">
             <span class="hint">3–20 characters: letters, numbers, dot or underscore. You'll log in with this.</span></div>
-          <div class="field"><label for="suEmail">Email <span class="faint">(optional)</span></label><input class="input" id="suEmail" type="email" autocomplete="email" placeholder="you@example.com"></div>
+          <div class="field"><label for="suEmail">Email</label><input class="input" id="suEmail" type="email" autocomplete="email" required placeholder="you@example.com"></div>
           <div class="field"><label for="suPw">Password</label><input class="input" id="suPw" type="password" autocomplete="new-password" required>
             <span class="hint">At least 8 characters, with a letter and a number.</span></div>
           <div class="field"><label for="suPw2">Confirm password</label><input class="input" id="suPw2" type="password" autocomplete="new-password" required></div>`

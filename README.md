@@ -12,7 +12,7 @@ Nobody sees the dashboard without logging in.
 
 - **Sign up, two ways:**
   - **Continue with Google:** one tap using the Google account already signed in on the device (Google One Tap and the Sign in with Google button). No new password is needed, and the user ID comes from the Gmail address.
-  - **Register a user ID:** full name, a unique **user ID** (3–20 characters: letters, numbers, `.` or `_`), an optional email, and a password (8+ characters with a letter and a number, entered twice).
+  - **Register a user ID:** full name, a unique **user ID** (3–20 characters: letters, numbers, `.` or `_`), an email, and a password (8+ characters with a letter and a number, entered twice).
 - **Log in:** Continue with Google, or user ID / email plus password. Google users can also set a password in Settings. You can stay logged in on the device for up to 30 days.
 - **Per-user data:** each account has its own calls, contacts, settings and history.
 - **Settings → Account:** change password, log out.
