@@ -258,14 +258,14 @@ async function fetchJSON(url, opts) {
 
 const services = {
   /** Send the uploaded audio to the microservice. Its JSON reply carries transcript, summary and the fraud category. */
-  async analyse(blob, fileName, token, onWait) {
+  async analyse(blob, fileName, token, onWait, onTranscript) {
     if (!blob) throw new ServiceError("No audio.", "Upload an audio file or record a call first.");
     if (!S.settings.transcriberUrl) throw new ServiceError("Microservice not connected.", "Add its URL in Settings → Microservice.");
     if (cloud.on) { if (!(await cloud.fresh())) throw new ServiceError("Your sign-in expired.", "Log out and log in again, then retry."); }
     else if (!String(S.settings.apiKey || "").trim()) throw new ServiceError("API token missing.", "The microservice only accepts requests with your API token. Paste it in Settings → Microservice.");
     const fd = new FormData();
     fd.append(CFG.audioField || "audio", blob, fileName || "call.webm");   // exactly one field: the service rejects extras
-    let raw = await this.viaJobs(fd, onWait);           // queued: many users at once, live position
+    let raw = await this.viaJobs(fd, onWait, onTranscript);           // queued: many users at once, live position
     for (let attempt = 1; !raw; attempt++) {           // older service without a jobs API: direct call
       try { raw = await fetchJSON(S.settings.transcriberUrl, { method: "POST", body: fd, headers: authHeaders() }); break; }
       catch (e) {
@@ -290,7 +290,7 @@ const services = {
   },
   /** Submit to POST /v1/jobs and poll GET /v1/jobs/{id}. Returns the result JSON, or null if the
    *  service has no jobs API (then the caller uses the direct endpoint). */
-  async viaJobs(fd, onWait) {
+  async viaJobs(fd, onWait, onTranscript) {
     const url = S.settings.transcriberUrl;
     if (!/\/v1\/audio\/analyze\/?$/.test(new URL(url).pathname)) return null;
     const base = new URL(url).origin + "/v1/jobs";
@@ -313,6 +313,7 @@ const services = {
     while (true) {
       const secs = Math.round((Date.now() - t0) / 1000);
       if (view.status === "done") return view.result;
+      if (view.transcript && onTranscript) { onTranscript(view.transcript); onTranscript = null; }
       if (view.status === "failed") {
         const er = view.error || {};
         throw new ServiceError("The microservice couldn't process this call.", `${er.detail || "Unknown error."}${er.status ? ` (code ${er.status})` : ""}`);
@@ -320,7 +321,7 @@ const services = {
       say(view.status === "queued" ? `${label.queued}: #${view.position || 1}${view.position > 1 ? ` (${view.position - 1} call${view.position > 2 ? "s" : ""} ahead of you)` : ""} · ${secs}s`
         : `${label[view.status] || view.status}… · ${secs}s`);
       if (Date.now() - t0 > limit) throw new ServiceError("No result from the microservice.", `It accepted the call but hasn't finished after ${Math.round(limit / 60000)} minutes. Try again later.`);
-      await sleep(view.status === "queued" && view.position > 2 ? 5000 : 2500);
+      await sleep(view.status === "queued" && view.position > 2 ? 4000 : 1000);
       if (cloud.on) await cloud.fresh();
       try { view = await fetchJSON(`${base}/${encodeURIComponent(job.job_id)}`, { headers: authHeaders() }); misses = 0; }
       catch (e) {
@@ -787,6 +788,11 @@ function renderRun() {
   const r = S.run;
   if (steps) steps.innerHTML = stepItems(r ? r.state : {});
   if (btn) { btn.disabled = !!(r && r.running); btn.innerHTML = r && r.running ? `<span class="spin"></span> Analysing… (you can switch pages)` : `${icon("wave")}Analyze call`; }
+  if (r && r.running && r.partial) {         // transcript arrives first; the fraud verdict follows
+    box.innerHTML = `<div class="card card-pad"><div class="row" style="margin-bottom:8px"><span class="spin"></span><h3>Transcript ready. Checking for fraud…</h3></div>
+      <div class="muted" style="white-space:pre-wrap;font-size:14px;line-height:1.55">${esc(r.partial)}</div></div>`;
+    return;
+  }
   if (!r || r.running) { box.innerHTML = ""; return; }
   if (r.rec) { box.innerHTML = resultCard(r.rec); bindResult(box, r.rec); return; }
   if (r.error) {
@@ -832,7 +838,8 @@ async function runPipeline(blob, fileName) {
     if (secs != null && secs > maxSecs + 0.5) throw new ServiceError("Recording is too long.", `It is ${fmtDur(secs)} long. The microservice accepts up to ${fmtDur(maxSecs)}. Trim it and try again.`);
     set("upload", "done", `${fileName} · ${(blob.size / 1024).toFixed(0)} KB${secs != null ? ` · ${fmtDur(secs)}` : ""}`);
     cur = "transcribe"; set("transcribe", "active", "Sending audio to your microservice…");
-    const tr = await services.analyse(blob, fileName, token, (note) => set("transcribe", "active", note));
+    const tr = await services.analyse(blob, fileName, token, (note) => set("transcribe", "active", note),
+      (text) => { S.run.partial = text; renderRun(); });
     if (tr.duration == null) tr.duration = secs;
     set("transcribe", "done", [tr.transcript ? `${(tr.transcript.match(/\S+/g) || []).length} words` : "", tr.summary ? "summary received" : "no summary", tr.labels.length ? `${tr.labels.length} labels` : ""].filter(Boolean).join(" · "));
     cur = "classify";
