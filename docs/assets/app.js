@@ -265,8 +265,8 @@ const services = {
     else if (!String(S.settings.apiKey || "").trim()) throw new ServiceError("API token missing.", "The microservice only accepts requests with your API token. Paste it in Settings → Microservice.");
     const fd = new FormData();
     fd.append(CFG.audioField || "audio", blob, fileName || "call.webm");   // exactly one field: the service rejects extras
-    let raw;
-    for (let attempt = 1; ; attempt++) {
+    let raw = await this.viaJobs(fd, onWait);           // queued: many users at once, live position
+    for (let attempt = 1; !raw; attempt++) {           // older service without a jobs API: direct call
       try { raw = await fetchJSON(S.settings.transcriberUrl, { method: "POST", body: fd, headers: authHeaders() }); break; }
       catch (e) {
         if (e.status !== 429 || attempt > 3) throw e;
@@ -287,6 +287,48 @@ const services = {
     }
     if (!r.transcript && !r.summary) throw new ServiceError("Incomplete response from the microservice.", "It sent no transcript or summary.");
     return r;
+  },
+  /** Submit to POST /v1/jobs and poll GET /v1/jobs/{id}. Returns the result JSON, or null if the
+   *  service has no jobs API (then the caller uses the direct endpoint). */
+  async viaJobs(fd, onWait) {
+    const url = S.settings.transcriberUrl;
+    if (!/\/v1\/audio\/analyze\/?$/.test(new URL(url).pathname)) return null;
+    const base = new URL(url).origin + "/v1/jobs";
+    const say = (m) => onWait && onWait(m);
+    let job;
+    for (let attempt = 1; ; attempt++) {
+      try { job = await fetchJSON(base, { method: "POST", body: fd, headers: authHeaders() }); break; }
+      catch (e) {
+        if (e.status === 404 || e.status === 405) return null;
+        if (!(e.status === 503 && /waiting/i.test(e.detail || e.message)) || attempt > 10) throw e;
+        const wait = Math.min(60, Math.max(10, e.retryAfter || 30));
+        say(`The queue is full right now. Trying again in ${wait}s…`); await sleep(wait * 1000);
+      }
+    }
+    if (!job || !job.job_id) return null;
+    const label = { queued: "Waiting in line", transcribing: "Transcribing the audio", waiting_for_classifier: "Transcribed. Waiting for the fraud check",
+                    classifying: "Checking for fraud" };
+    const t0 = Date.now(), limit = Math.max(20 * 60, S.settings.timeoutSec || 0) * 1000;
+    let misses = 0, view = job;
+    while (true) {
+      const secs = Math.round((Date.now() - t0) / 1000);
+      if (view.status === "done") return view.result;
+      if (view.status === "failed") {
+        const er = view.error || {};
+        throw new ServiceError("The microservice couldn't process this call.", `${er.detail || "Unknown error."}${er.status ? ` (code ${er.status})` : ""}`);
+      }
+      say(view.status === "queued" ? `${label.queued}: #${view.position || 1}${view.position > 1 ? ` (${view.position - 1} call${view.position > 2 ? "s" : ""} ahead of you)` : ""} · ${secs}s`
+        : `${label[view.status] || view.status}… · ${secs}s`);
+      if (Date.now() - t0 > limit) throw new ServiceError("No result from the microservice.", `It accepted the call but hasn't finished after ${Math.round(limit / 60000)} minutes. Try again later.`);
+      await sleep(view.status === "queued" && view.position > 2 ? 5000 : 2500);
+      if (cloud.on) await cloud.fresh();
+      try { view = await fetchJSON(`${base}/${encodeURIComponent(job.job_id)}`, { headers: authHeaders() }); misses = 0; }
+      catch (e) {
+        if (e.status === 404) throw new ServiceError("The call was lost by the microservice.", "It probably restarted while your call was waiting. Nothing was saved. Try again.");
+        if (e.status === 401 || ++misses > 6) throw e;
+        say(`Connection hiccup, still waiting… · ${secs}s`);
+      }
+    }
   },
   async notify(n, rec) {
     if (S.settings.notifierUrl) {
