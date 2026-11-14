@@ -33,6 +33,7 @@ Nobody sees the dashboard without logging in.
 | F7 | Honeytrap / sextortion | |
 | F8 | Family emergency / voice clone | |
 | F9 | Prize / job / advance-fee | |
+| FX | Fraud, type not identified | |
 
 ## Alert routing
 
@@ -85,17 +86,21 @@ Add this middleware **after** the token-check middleware, so it wraps it and ans
 
 Exactly **one** field, `audio`, holding the uploaded or recorded call (the service rejects extra fields). The recording can be at most 120 s long, which is checked before upload.
 
-Response:
+Response (Vinit's API passes on Srivarsh's classifier result):
 
 ```json
-{ "request_id": "…", "classes": ["F3", "gift-card", "threat"], "summary": "Caller posing as a tax officer…" }
+{ "request_id": "…", "text": "<transcript>",
+  "classes": ["fraud", "category:F1", "risk_level:high", "risk_score:100", "type:financial_impersonation", "flag:F01"],
+  "summary": "The caller claimed to be from the bank…" }
 ```
 
-- **Category:** the F0–F9 code (or category name, e.g. `"Government impersonation"`) found in `classes`. `not_fraud` maps to F0.
-- **Labels:** every entry in `classes`.
-- A `category` / `labels` / `transcript` field is also accepted if the service adds one.
+- **Category:** `category:F0`…`F9` in `classes`. Otherwise `type:<scam type>`, otherwise the decision word.
+  `fraud` / `uncertain` with no type becomes **FX: Fraud (type not identified)**, so the alerts still go out.
+  `flag:Fnn` entries are red-flag IDs and are never read as categories.
+- **Risk:** `risk_level:high|medium|low`. **Labels:** every entry in `classes`, exactly as sent.
+- A `429` (busy) is retried automatically after `Retry-After`, up to 3 times.
 
-If `classes` has no F0–F9 code (e.g. only `["fraud"]`), the call is rejected with a clear message, because the alert rules need the category. A `429` (busy) is retried automatically after `Retry-After`, up to 3 times.
+The chain: **dashboard → Vinit's `call-audio-api` (`/v1/audio/analyze`, speech to text) → Srivarsh's `scam-classifier` (`/v1/classify`) → back to the dashboard**, which saves the call, labels it and routes the alerts.
 
 ### Notifier (optional): `POST <notifierUrl>`
 

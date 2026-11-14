@@ -138,6 +138,7 @@ function normCategory(v) {
   if (v == null) return null;
   if (typeof v === "number" && v >= 0 && v <= 9) return "F" + Math.round(v);
   const s = String(v).trim();
+  if (/^fx$/i.test(s)) return "FX";
   const m = s.match(/^f?\s*([0-9])$/i) || s.match(/^f([0-9])\b/i);
   if (m) return "F" + m[1];
   const low = s.toLowerCase();
@@ -152,6 +153,28 @@ function normalise(raw) {
   if (raw.transcript && typeof raw.transcript === "object") raw = { ...raw, transcript: raw.transcript.text || raw.transcript.full_text || "" };
   if (!raw.transcript && !raw.text && Array.isArray(raw.segments)) raw = { ...raw, transcript: raw.segments.map((x) => (x.speaker ? `${x.speaker}: ` : "") + (x.text || "").trim()).join("\n") };
   const pick = (...ks) => { for (const k of ks) if (raw[k] != null && raw[k] !== "") return raw[k]; return undefined; };
+  // Classifier "classes": a decision word (fraud / uncertain / not_fraud) plus "key:value" details,
+  // e.g. ["fraud", "category:F1", "risk_level:high", "type:financial_impersonation", "flag:F01", …].
+  // "flag:Fnn" are red-flag IDs, NOT categories, so key:value entries are never read as a category directly.
+  const kv = {}, plain = [];
+  if (Array.isArray(raw.classes)) for (const c of raw.classes) {
+    const t = String(c).trim(), i = t.indexOf(":");
+    if (i > 0) { const k = t.slice(0, i).toLowerCase(); if (!(k in kv)) kv[k] = t.slice(i + 1).trim(); } else if (t) plain.push(t);
+  }
+  const decision = (plain[0] || "").toLowerCase().replace(/[\s-]+/g, "_");
+  const suspected = decision === "fraud" || decision === "uncertain";
+  const TYPE_SLUGS = { not_fraud: "F0", financial_impersonation: "F1", account_takeover: "F2", government_impersonation: "F3",
+    tech_support_business_impersonation: "F4", romance: "F5", investment_crypto: "F6", sextortion: "F7",
+    family_emergency: "F8", prize_job_advance_fee: "F9" };
+  const fromKv = () => {
+    if (kv.category) { const c = normCategory(kv.category); if (c) return c; if (/^unknown$/i.test(kv.category) && suspected) return "FX"; }
+    if (kv.type && TYPE_SLUGS[kv.type.toLowerCase()]) { const c = TYPE_SLUGS[kv.type.toLowerCase()]; return c === "F0" && suspected ? "FX" : c; }
+    return null;
+  };
+  const category = normCategory(pick("category", "family", "class", "prediction", "fraud_type"))
+    ?? fromKv() ?? plain.map((c) => normCategory(c)).find(Boolean) ?? (suspected ? "FX" : null);
+  const lvl = String(kv.risk_level || pick("risk_level") || "").toLowerCase();
+  const risk = { high: "high", medium: "medium", low: "low", safe: "low" }[lvl];
   let conf = pick("confidence", "score", "probability", "prob");
   if (conf != null) { conf = Number(conf); if (conf > 1) conf /= 100; }
   return {
@@ -161,8 +184,7 @@ function normalise(raw) {
     language: pick("language", "lang"),
     token: pick("token", "call_token", "call_id", "id"),
     tokens: pick("tokens", "token_count", "num_tokens"),
-    category: normCategory(pick("category", "family", "class", "prediction", "fraud_type"))
-      ?? (Array.isArray(raw.classes) ? raw.classes.map((c) => normCategory(c)).find(Boolean) ?? null : null),
+    category, risk, decision,
     confidence: conf,
     scores: pick("scores", "probabilities"),
     labels: toLabels(pick("labels", "tags", "call_labels", "classes")),
@@ -258,8 +280,8 @@ const services = {
       const got = raw.category != null ? `category "${String(raw.category).slice(0, 40)}"`
         : Array.isArray(raw.classes) ? `classes ${JSON.stringify(raw.classes).slice(0, 80)}` : "";
       throw new ServiceError("Incomplete response from the microservice.", got
-        ? `It sent ${got}, but none of them is a fraud category F0–F9 (e.g. "F3" or "Government impersonation").`
-        : `It didn't send a fraud category. Expected "classes" containing one of F0–F9, or a "category" field.`);
+        ? `It sent ${got}, but no fraud decision or category (F0–F9) could be read from it.`
+        : `It didn't send a fraud category. Expected "classes" with a decision (fraud / uncertain / not_fraud) and "category:F0"…"F9".`);
     }
     if (!r.transcript && !r.summary) throw new ServiceError("Incomplete response from the microservice.", "It sent no transcript or summary.");
     return r;
@@ -353,7 +375,7 @@ function buildRecord({ token, createdAt, fileName, audioType, tr, cls, source })
     transcript: tr.transcript, summary: tr.summary,
     tokens: tr.tokens != null ? Number(tr.tokens) : words,
     serviceToken: tr.token && tr.token !== token ? String(tr.token) : "",
-    category: code, categoryName: c.name, isFraud: code !== "F0", isBanking: !!c.banking, risk: c.risk,
+    category: code, categoryName: c.name, isFraud: code !== "F0", isBanking: !!c.banking, risk: tr.risk || c.risk, decision: tr.decision || "",
     confidence: cls.confidence != null ? Number(cls.confidence) : null, scores: cls.scores || null, classifiedBy: cls.by,
     source, labels: tr.labels || [], userLabels: [], notifications: [], reviewed: false, hasAudio: false,
   };

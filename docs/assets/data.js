@@ -21,6 +21,8 @@ window.CG_DATA = {
           advice: "The voice may be cloned. Hang up and call the family member back on their known number before sending anything." },
     F9: { name: "Prize / job / advance-fee", banking: false, risk: "medium",
           advice: "Real prizes and jobs never ask for an upfront fee. Do not pay processing, registration or release charges." },
+    FX: { name: "Fraud (type not identified)", banking: false, risk: "high",
+          advice: "The service flagged this call as likely fraud but couldn't name the type. Don't share codes, money or personal details; call back on an official number you find yourself." },
   },
 
   plans: [
