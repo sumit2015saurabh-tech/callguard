@@ -16,8 +16,8 @@ Nobody sees the dashboard without logging in.
 - **Log in:** Continue with Google, or user ID / email plus password. Google users can also set a password in Settings. You can stay logged in on the device for up to 30 days.
 - **Per-user data:** each account has its own calls, contacts, settings and history.
 - **Settings → Account:** change password, log out.
-- **Security:** passwords are never stored. Only a salted PBKDF2-SHA-256 hash (210,000 rounds) is kept, compared in constant time.
-- **Limitation:** there is no server yet, so accounts live in the browser where they were created. To log in from any device, connect an auth backend (Firebase Auth, Supabase or your own API) behind the same screens.
+- **Security:** with Supabase, passwords are hashed by Supabase Auth. In browser-only mode, only a salted PBKDF2-SHA-256 hash (210,000 rounds) is kept, compared in constant time.
+- **Where accounts live:** on Supabase once it's configured (any device, verified by the microservice; see below). Until then, in the browser where they were created.
 
 ## Fraud categories
 
@@ -64,9 +64,17 @@ The fraud category and labels always come from **your microservice**. The dashbo
 
 **Default service:** `https://call-audio-api-c3qg.onrender.com/v1/audio/analyze` (set in `docs/assets/config.js`).
 
-### Token verification
+### Per-user verification (Supabase sign-in)
 
-Each user pastes the **API token issued by the service** in **Settings → Microservice**. It is saved only in their browser, under their account, and never included in backups. Every request sends `Authorization: Bearer <token>`. **The service verifies the token** and answers `401` if it's missing or wrong, and the dashboard shows that clearly. Without a token, the dashboard refuses to send audio. **Test connection & token** checks three things: the service is up (`/healthz`), the browser is allowed to call it (CORS), and the token is accepted, with the classifier configured (`/v1/status`).
+With `supabaseUrl` and `supabaseAnonKey` set in `docs/assets/config.js`, accounts live in **Supabase Auth**: passwords are hashed there, and an account works on any device. Login with user ID or email plus password, or Google, gives each user a short-lived **personal access token**. The dashboard renews it automatically and sends it with every call as `Authorization: Bearer <token>`. **Vinit's service checks every token with Supabase** (`/auth/v1/user`; a verified token is cached for 60 s). A wrong, expired or logged-out token gets `401`. Users never paste a token.
+
+One-time setup:
+1. Create a free project at supabase.com.
+2. In **SQL Editor**, run [`supabase-setup.sql`](supabase-setup.sql). It adds user IDs, "log in with user ID" and unique user IDs.
+3. Optional, for instant sign-up: **Authentication → Sign In / Providers → Email → turn off "Confirm email"**. Otherwise users click a link in their email first, and **Authentication → URL Configuration → Site URL** must be `https://sumit2015saurabh-tech.github.io/callguard/`.
+4. Put the **Project URL** and **anon public key** (Project Settings → API) in `config.js`, and in the transcription service's environment as `SUPABASE_URL` / `SUPABASE_ANON_KEY`.
+
+Without Supabase settings, accounts stay in the browser, and each user pastes the service's API token in **Settings → Microservice**. **Test connection & token** checks that the service is up (`/healthz`), that the browser may call it (CORS), and that your sign-in or token is accepted (`/v1/status`).
 
 ### Required on the service: CORS
 

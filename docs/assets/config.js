@@ -14,4 +14,7 @@ window.CG_CONFIG = {
   authCheckUrl: "https://call-audio-api-c3qg.onrender.com/v1/status",
   maxAudioSeconds: 120,
   googleClientId: "",
+  // Per-user sign-in (Supabase → Project Settings → API). Both empty = accounts stay in the browser.
+  supabaseUrl: "",
+  supabaseAnonKey: "",
 };

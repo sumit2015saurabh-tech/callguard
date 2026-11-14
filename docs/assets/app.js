@@ -204,6 +204,7 @@ function svcUrls(url) {
   return { origin, health: (same && CFG.healthUrl) || origin + "/healthz", status: (same && CFG.authCheckUrl) || origin + "/v1/status" };
 }
 function authHeaders() {
+  if (cloud.on) { const t = cloud.token(); return t ? { Authorization: `Bearer ${t}` } : {}; }
   const k = String(S.settings.apiKey || "").trim();
   return k ? { Authorization: `Bearer ${k}` } : {};
 }
@@ -232,7 +233,7 @@ async function fetchJSON(url, opts) {
   if (!r.ok) {
     const why = {
       400: "It rejected the request (400 Bad Request). The audio format may not be supported.",
-      401: "It did not accept your API token (401 Unauthorized). Check the token in Settings → Microservice.",
+      401: cloud.on ? "It did not accept your sign-in (401 Unauthorized). Log out and log in again." : "It did not accept your API token (401 Unauthorized). Check the token in Settings → Microservice.",
       403: "Access denied (403 Forbidden). Check the API key in Settings.",
       404: "The URL was not found (404). Check the microservice URL in Settings.",
       405: "That URL doesn't accept uploads (405 Method Not Allowed).",
@@ -260,7 +261,8 @@ const services = {
   async analyse(blob, fileName, token, onWait) {
     if (!blob) throw new ServiceError("No audio.", "Upload an audio file or record a call first.");
     if (!S.settings.transcriberUrl) throw new ServiceError("Microservice not connected.", "Add its URL in Settings → Microservice.");
-    if (!String(S.settings.apiKey || "").trim()) throw new ServiceError("API token missing.", "The microservice only accepts requests with your API token. Paste it in Settings → Microservice.");
+    if (cloud.on) { if (!(await cloud.fresh())) throw new ServiceError("Your sign-in expired.", "Log out and log in again, then retry."); }
+    else if (!String(S.settings.apiKey || "").trim()) throw new ServiceError("API token missing.", "The microservice only accepts requests with your API token. Paste it in Settings → Microservice.");
     const fd = new FormData();
     fd.append(CFG.audioField || "audio", blob, fileName || "call.webm");   // exactly one field: the service rejects extras
     let raw;
@@ -1127,8 +1129,8 @@ VIEWS.settings = (root) => {
         <div><h3>Microservice</h3><div class="faint" style="font-size:12.5px;margin-top:2px">Every call is sent here with your API token. The service checks the token, and the fraud category and labels come from its response.</div></div>
         <div class="field"><label for="sTr">Microservice URL</label><input class="input" id="sTr" data-k="transcriberUrl" placeholder="https://your-host/v1/audio/transcribe" value="${esc(st.transcriberUrl)}">
           <span class="hint">POST multipart <span class="mono">${esc(CFG.audioField)}</span> (one field only), header <span class="mono">Authorization: Bearer &lt;token&gt;</span>.</span></div>
-        <div class="field"><label for="sKey">API token</label><input class="input" id="sKey" type="password" data-k="apiKey" value="${esc(st.apiKey)}" autocomplete="off" spellcheck="false" placeholder="Paste the token issued by the service">
-          <span class="hint">Required. Saved only in this browser, for your account. It's sent only to the microservice and never included in backups.</span></div>
+        ${cloud.on ? `<div class="banner">${icon("shield")}<div>You're verified by your sign-in: every call carries your personal token, and the microservice checks it.</div></div>` : `<div class="field"><label for="sKey">API token</label><input class="input" id="sKey" type="password" data-k="apiKey" value="${esc(st.apiKey)}" autocomplete="off" spellcheck="false" placeholder="Paste the token issued by the service">
+          <span class="hint">Required. Saved only in this browser, for your account. It's sent only to the microservice and never included in backups.</span></div>`}
         <div class="field"><label for="sNo">Notifier URL (email / push, optional)</label><input class="input" id="sNo" data-k="notifierUrl" placeholder="https://your-host/notify" value="${esc(st.notifierUrl)}">
           <span class="hint">POST JSON <span class="mono">{to, role, channel, subject, body, call_token, category}</span> per alert. Without it, emails go to the outbox.</span></div>
         <div class="form-grid">
@@ -1142,9 +1144,10 @@ VIEWS.settings = (root) => {
             <div><h3>${esc(S.user.name)}</h3><div class="faint" style="font-size:12.5px">@${esc(S.user.id)}${S.user.email ? ` · ${esc(S.user.email)}` : ""} · member since ${fmtDate(S.user.createdAt)}</div></div>
             <div class="spacer"></div><button class="btn btn-sm" id="logout2">${icon("logout")}Log out</button></div>
           ${S.user.googleSub ? `<div class="row faint" style="font-size:12.5px">${GOOGLE_G} Signed in with Google${S.user.hash ? " · password also set" : ""}</div>` : ""}
+          ${cloud.on ? `<div class="row faint" style="font-size:12.5px">${icon("shield")} Account stored securely on the sign-in server · works on any device</div>` : ""}
           <form class="form-grid" id="pwForm" style="grid-template-columns:${S.user.hash ? "1fr 1fr auto" : "1fr auto"};align-items:end">
             ${S.user.hash ? `<div class="field"><label for="pwCur">Current password</label><input class="input" id="pwCur" type="password" autocomplete="current-password" required></div>` : ""}
-            <div class="field"><label for="pwNew">${S.user.hash ? "New password" : "Set a password (to also log in with your user ID)"}</label><input class="input" id="pwNew" type="password" autocomplete="new-password" required></div>
+            <div class="field"><label for="pwNew">${S.user.hash || cloud.on ? "New password" : "Set a password (to also log in with your user ID)"}</label><input class="input" id="pwNew" type="password" autocomplete="new-password" required></div>
             <button class="btn">${S.user.hash ? "Change password" : "Set password"}</button></form>
         </div>
         <div class="card card-pad stack">
@@ -1171,7 +1174,10 @@ VIEWS.settings = (root) => {
   $("#logout2").onclick = () => auth.logout();
   $("#pwForm").onsubmit = async (e) => {
     e.preventDefault();
-    try { await auth.changePassword(S.user.id, $("#pwCur")?.value || "", $("#pwNew").value); S.user = auth.users()[S.user.id]; toast("Password saved"); VIEWS.settings(root); }
+    try {
+      if (cloud.on) { await cloud.changePassword($("#pwNew").value); toast("Password saved"); VIEWS.settings(root); return; }
+      await auth.changePassword(S.user.id, $("#pwCur")?.value || "", $("#pwNew").value); S.user = auth.users()[S.user.id]; toast("Password saved"); VIEWS.settings(root);
+    }
     catch (ex) { toast(ex.message, "alert"); }
   };
   $$("[data-k]", root).forEach((el) => el.addEventListener("change", () => {
@@ -1200,14 +1206,16 @@ VIEWS.settings = (root) => {
     try { await fetch(health, { cache: "no-store" }); }
     catch { return say(false, `Service is running, but it blocks requests from ${location.origin} (CORS). Its owner must allow this origin.`); }
     // 3) is the token accepted? (an authenticated GET; 401 = bad token)
-    if (!String(st.apiKey || "").trim()) return say(false, "Service reachable. Now paste your API token.");
+    if (cloud.on) { if (!(await cloud.fresh())) return say(false, "Your sign-in expired. Log in again."); }
+    else if (!String(st.apiKey || "").trim()) return say(false, "Service reachable. Now paste your API token.");
     try {
       const r = await fetch(status, { headers: authHeaders(), cache: "no-store" });
-      if (r.status === 401 || r.status === 403) return say(false, "Service reachable, but it rejected your API token.");
+      if (r.status === 401 || r.status === 403) return say(false, cloud.on ? "Service reachable, but it didn't accept your sign-in (is SUPABASE_URL set on the service?)." : "Service reachable, but it rejected your API token.");
+      if (r.status === 503) return say(false, "Service reachable, but it couldn't check your sign-in right now (503).");
       let j = {}; try { j = await r.json(); } catch { /* not JSON */ }
       if (r.ok && j.classifier_configured === false) return say(false, "Token accepted, but the service's classifier is not configured yet, so calls can't be classified.");
       if (r.ok && j.model_ready === false) return say(false, "Token accepted, but the speech model is still loading. Try again in a minute.");
-      return say(true, r.ok ? `Connected. Token accepted.${j.max_audio_seconds ? ` Max audio ${j.max_audio_seconds}s.` : ""}` : `Connected (HTTP ${r.status}). Token not rejected.`);
+      return say(true, r.ok ? `Connected. ${cloud.on ? "Your sign-in was verified." : "Token accepted."}${j.max_audio_seconds ? ` Max audio ${j.max_audio_seconds}s.` : ""}` : `Connected (HTTP ${r.status}). Token not rejected.`);
     } catch { return say(false, "Service reachable, but the token check was blocked (CORS on authenticated requests)."); }
   };
   const pd = $("#pickDir"); if (pd) pd.onclick = async () => { try { await folder.connect(); VIEWS.settings(root); } catch (e) { if (e.name !== "AbortError") toast(e.message, "alert"); } };
@@ -1306,7 +1314,100 @@ const auth = {
       return this.users()[s.id] || null;
     } catch { return null; }
   },
-  logout() { try { window.google?.accounts?.id?.disableAutoSelect(); } catch { /* ignore */ } GLS.del("session"); location.hash = ""; location.reload(); },
+  async logout() { try { window.google?.accounts?.id?.disableAutoSelect(); } catch { /* ignore */ } if (cloud.on) await cloud.logout(); GLS.del("session"); location.hash = ""; location.reload(); },
+};
+
+/* ============================== cloud accounts (Supabase Auth) ==============================
+   When CG_CONFIG.supabaseUrl + supabaseAnonKey are set, accounts live on the sign-in server
+   (passwords hashed there, usable from any device). Login returns a short-lived personal access
+   token; every microservice call carries it and the microservice verifies it with Supabase. */
+const cloud = {
+  url: String(CFG.supabaseUrl || "").replace(/\/+$/, ""), key: CFG.supabaseAnonKey || "",
+  get on() { return !!(this.url && this.key); },
+  s: null,                                   // {access_token, refresh_token, expires_at, user}
+  async req(path, body, { method = "POST", token } = {}) {
+    let r;
+    try {
+      r = await fetch(this.url + path, { method, headers: { apikey: this.key, "Content-Type": "application/json",
+        Authorization: `Bearer ${token || this.key}` }, body: body ? JSON.stringify(body) : undefined });
+    } catch { throw new Error("Can't reach the sign-in server. Check your connection and try again."); }
+    const text = await r.text(); let j = {}; try { j = text ? JSON.parse(text) : {}; } catch { /* not JSON */ }
+    if (!r.ok) {
+      const m = String(j.msg || j.error_description || j.message || j.error || `HTTP ${r.status}`);
+      if (/invalid login credentials/i.test(m)) throw new Error("User ID / email or password is incorrect.");
+      if (/email not confirmed/i.test(m)) throw new Error("Confirm your email first: open the link we sent you, then log in.");
+      if (/already registered|already exists/i.test(m)) throw new Error("An account with this email already exists. Log in instead.");
+      if (/database error saving new user/i.test(m)) throw new Error("That user ID is taken. Try another.");
+      if (/rate limit/i.test(m)) throw new Error("Too many attempts. Wait a minute and try again.");
+      throw new Error(m);
+    }
+    return j;
+  },
+  store(sess, remember) {
+    this.s = sess;
+    const v = JSON.stringify(sess);
+    try { sessionStorage.removeItem("cg.cloud"); localStorage.removeItem("cg.cloud"); (remember ? localStorage : sessionStorage).setItem("cg.cloud", v); } catch { /* ignore */ }
+  },
+  load() { try { return JSON.parse(sessionStorage.getItem("cg.cloud") || localStorage.getItem("cg.cloud") || "null"); } catch { return null; } },
+  remembered() { try { return !!localStorage.getItem("cg.cloud"); } catch { return false; } },
+  fromGoTrue(j, remember) {
+    if (!j.access_token) return null;
+    const sess = { access_token: j.access_token, refresh_token: j.refresh_token,
+      expires_at: j.expires_at ? j.expires_at * 1000 : Date.now() + (j.expires_in || 3600) * 1000, user: j.user };
+    this.store(sess, remember); return sess;
+  },
+  token() { return this.s && this.s.access_token; },
+  /** Make sure the access token is valid for at least 2 more minutes (refreshes it if needed). */
+  async fresh() {
+    if (!this.s) return false;
+    if (this.s.expires_at - Date.now() > 120000) return true;
+    try { this.fromGoTrue(await this.req("/auth/v1/token?grant_type=refresh_token", { refresh_token: this.s.refresh_token }), this.remembered()); return true; }
+    catch { return false; }
+  },
+  user() {
+    const u = this.s.user || {}, m = u.user_metadata || {}, email = u.email || "";
+    return { id: (m.user_id || email.split("@")[0] || "user").toLowerCase(), ns: "sb_" + u.id, name: m.name || m.full_name || email.split("@")[0],
+      email, picture: m.avatar_url || m.picture || "", createdAt: u.created_at || new Date().toISOString(), cloud: true,
+      googleSub: (u.app_metadata || {}).provider === "google" ? (m.sub || "google") : "" };
+  },
+  async signup({ name, email, id, password }) {
+    email = String(email || "").trim(); id = String(id || "").trim().toLowerCase();
+    if (!name.trim()) throw new Error("Enter your full name.");
+    if (!/^[a-z0-9_.]{3,20}$/.test(id)) throw new Error("User ID: 3–20 characters, letters, numbers, dot or underscore.");
+    if (!isEmail(email)) throw new Error("Enter a valid email address.");
+    const pp = auth.passwordProblem(password); if (pp) throw new Error(pp);
+    if (await this.req("/rest/v1/rpc/user_id_taken", { uid: id })) throw new Error("That user ID is taken. Try another.");
+    const j = await this.req("/auth/v1/signup", { email, password, data: { name: name.trim(), user_id: id } });
+    return { id, email, session: this.fromGoTrue(j, true) };   // no session => email confirmation required
+  },
+  async login(login, password, remember) {
+    let email = String(login || "").trim();
+    if (!email.includes("@")) {
+      email = await this.req("/rest/v1/rpc/email_for_user_id", { uid: email.toLowerCase() });
+      if (!email) { await sleep(400); throw new Error("User ID / email or password is incorrect."); }
+    }
+    this.fromGoTrue(await this.req("/auth/v1/token?grant_type=password", { email, password }), remember);
+    return this.user();
+  },
+  async google(idToken) {
+    this.fromGoTrue(await this.req("/auth/v1/token?grant_type=id_token", { provider: "google", id_token: idToken }), true);
+    const u = this.user(); u._new = Date.now() - Date.parse(u.createdAt) < 60000; return u;
+  },
+  async changePassword(next) {
+    const pp = auth.passwordProblem(next); if (pp) throw new Error(pp);
+    if (!(await this.fresh())) throw new Error("Your sign-in expired. Log in again.");
+    await this.req("/auth/v1/user", { password: next }, { method: "PUT", token: this.token() });
+  },
+  async restore() {
+    this.s = this.load();
+    if (!this.s) return null;
+    if (!(await this.fresh())) { this.store(null, false); try { sessionStorage.removeItem("cg.cloud"); localStorage.removeItem("cg.cloud"); } catch { /* ignore */ } return null; }
+    return this.user();
+  },
+  async logout() {
+    try { if (this.s) await this.req("/auth/v1/logout", null, { token: this.token() }); } catch { /* still log out locally */ }
+    try { sessionStorage.removeItem("cg.cloud"); localStorage.removeItem("cg.cloud"); } catch { /* ignore */ }
+  },
 };
 
 /* ---------- Google sign-in: uses the Google account already signed in on the device ---------- */
@@ -1356,7 +1457,7 @@ const google = {
     window.google.accounts.id.initialize({
       client_id: this.clientId, auto_select: false, cancel_on_tap_outside: true, use_fedcm_for_prompt: true,
       context: mode === "signup" ? "signup" : "signin",
-      callback: (resp) => { try { onDone(this.accountFrom(resp.credential)); } catch (e) { onError(e.message); } },
+      callback: async (resp) => { try { onDone(cloud.on ? await cloud.google(resp.credential) : this.accountFrom(resp.credential)); } catch (e) { onError(e.message); } },
     });
     el.innerHTML = "";
     window.google.accounts.id.renderButton(el, { type: "standard", theme: "outline", size: "large", shape: "pill",
@@ -1398,12 +1499,12 @@ function authScreen(mode = "login", note = "") {
       <div class="auth-switch">${mode === "login"
         ? `New to CallGuard? <a href="#" data-mode="signup">Sign up</a>`
         : `Already have an account? <a href="#" data-mode="login">Log in</a>`}</div>
-      <div class="faint" style="font-size:12px;margin-top:14px;text-align:center">Your call history is stored privately in this browser on this device.</div>
+      <div class="faint" style="font-size:12px;margin-top:14px;text-align:center">${cloud.on ? "Your account is stored securely on our sign-in server. Your call history stays private in this browser." : "Your call history is stored privately in this browser on this device."}</div>
     </div>`;
   $$("[data-mode]", box).forEach((a) => a.onclick = (e) => { e.preventDefault(); authScreen(a.dataset.mode); });
   const err = (m) => { const e = $("#authErr"); e.hidden = !m; e.innerHTML = m ? `${icon("alert")}<div>${esc(m)}</div>` : ""; };
   google.mount($("#gBox"), mode, async (u) => {
-    err(""); auth.startSession(u, true);
+    err(""); if (!cloud.on) auth.startSession(u, true);
     await startApp(u, true);
     if (u._new) toast(`Account created with ${u.email}`, "check");
   }, err);
@@ -1413,13 +1514,18 @@ function authScreen(mode = "login", note = "") {
     try {
       if (mode === "signup") {
         if ($("#suPw").value !== $("#suPw2").value) throw new Error("The two passwords don't match.");
-        const u = await auth.signup({ name: $("#suName").value, email: $("#suEmail").value, id: $("#suId").value, password: $("#suPw").value });
-        authScreen("login", `Account <b>${esc(u.id)}</b> created. Log in with your user ID and password.`);
+        const form = { name: $("#suName").value, email: $("#suEmail").value, id: $("#suId").value, password: $("#suPw").value };
+        const u = cloud.on ? await cloud.signup(form) : await auth.signup(form);
+        if (cloud.on && u.session) { await cloud.logout(); cloud.s = null; }   // still log in explicitly, as before
+        authScreen("login", cloud.on && !u.session
+          ? `Account <b>${esc(u.id)}</b> created. We sent a confirmation link to <b>${esc(u.email)}</b>: open it, then log in with your user ID and password.`
+          : `Account <b>${esc(u.id)}</b> created. Log in with your user ID and password.`);
         $("#liId").value = u.id; $("#liPw").focus();
         return;
       }
-      const u = await auth.login($("#liId").value, $("#liPw").value);
-      auth.startSession(u, $("#liRemember").checked);
+      let u;
+      if (cloud.on) u = await cloud.login($("#liId").value, $("#liPw").value, $("#liRemember").checked);
+      else { u = await auth.login($("#liId").value, $("#liPw").value); auth.startSession(u, $("#liRemember").checked); }
       await startApp(u, true);
     } catch (ex) { err(ex.message); btn.disabled = false; btn.textContent = label; }
   };
@@ -1427,7 +1533,7 @@ function authScreen(mode = "login", note = "") {
 
 /* ============================== boot ============================== */
 async function startApp(user, fresh = false) {
-  S.user = user; NS = user.id;
+  S.user = user; NS = user.ns || user.id;
   S.settings = { ...DEFAULT_SETTINGS, ...LS.get("settings", {}) };
   if (!S.settings.transcriberUrl && CFG.serviceUrl) S.settings.transcriberUrl = CFG.serviceUrl;
   if ((S.settings.timeoutSec || 0) < 300) S.settings.timeoutSec = 300;   // transcription + cold start can be slow
@@ -1452,7 +1558,13 @@ async function startApp(user, fresh = false) {
   if (fresh) toast(`Welcome, ${user.name.split(" ")[0]}`, "shield");
 }
 
-function boot() {
+async function boot() {
+  if (cloud.on) {
+    let u = null;
+    try { u = await cloud.restore(); } catch { u = null; }
+    if (!u) { authScreen(cloud.remembered() || GLS.get("seen", false) ? "login" : "signup"); GLS.set("seen", true); return; }
+    return startApp(u).catch((e) => { console.error("CallGuard start failed", e); cloud.logout(); authScreen("login", `Please log in again. (${esc(e.message || e)})`); });
+  }
   const fresh = () => authScreen(GLS.get("users", null) ? "login" : "signup");
   let u = null;
   try { u = auth.currentSession(); } catch { u = null; }
