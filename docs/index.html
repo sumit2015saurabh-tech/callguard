@@ -9,9 +9,38 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="assets/styles.css">
+<link rel="stylesheet" href="assets/styles.css?v=202611141232">
 </head>
 <body>
+<noscript><div style="padding:40px;text-align:center;font-family:sans-serif">CallGuard needs JavaScript. Please enable it and reload.</div></noscript>
+<div id="bootFail" hidden style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;font-family:system-ui,sans-serif;background:#f2f6f4">
+  <div style="max-width:440px;background:#fff;border:1px solid #dfe8e4;border-radius:14px;padding:26px;box-shadow:0 12px 40px rgba(29,43,42,.12)">
+    <h2 style="margin:0 0 8px;font-size:20px;color:#1d2b2a">CallGuard couldn't start</h2>
+    <p style="color:#4f6260;margin:0 0 6px">Your browser may be using an old copy of the app, or it is blocking site storage (private mode or strict cookie settings).</p>
+    <p id="bootFailMsg" style="color:#a32a2a;font-size:13px;margin:0 0 16px;word-break:break-word"></p>
+    <button id="bootFailReload" style="height:40px;padding:0 16px;border-radius:10px;border:0;background:#2f7f78;color:#fff;font-weight:600;cursor:pointer">Reload latest version</button>
+    <button id="bootFailReset" style="height:40px;padding:0 16px;border-radius:10px;border:1px solid #c9d7d1;background:#fff;font-weight:600;cursor:pointer;margin-left:8px">Log out &amp; reload</button>
+  </div>
+</div>
+<script>
+  /* Safety net: if the app throws or never shows a screen, show a recovery card instead of a blank page. */
+  (function () {
+    function fail(msg) {
+      var a = document.getElementById("auth"), b = document.getElementById("appRoot"), f = document.getElementById("bootFail");
+      if (!f) return;
+      if (a && !a.hidden) return; if (b && !b.hidden) return;
+      f.hidden = false; document.getElementById("bootFailMsg").textContent = msg || "";
+    }
+    window.__cgFail = fail;
+    window.addEventListener("error", function (e) { fail(e.message); });
+    window.addEventListener("unhandledrejection", function (e) { fail(e.reason && e.reason.message ? e.reason.message : String(e.reason)); });
+    window.addEventListener("load", function () { setTimeout(function () { fail("The app did not load."); }, 4000); });
+    document.addEventListener("click", function (e) {
+      if (e.target.id === "bootFailReload") location.replace(location.pathname + "?r=" + Date.now());
+      if (e.target.id === "bootFailReset") { try { localStorage.removeItem("cg.session"); sessionStorage.removeItem("cg.session"); } catch (x) {} location.replace(location.pathname + "?r=" + Date.now()); }
+    });
+  })();
+</script>
 <div class="auth-wrap" id="auth" hidden></div>
 <div class="app" id="appRoot" hidden>
   <aside class="sidebar" id="sidebar">
@@ -82,7 +111,7 @@
     <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4.5 7h15M9.5 7V4.8h5V7M6.5 7l1 13h9l1-13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
   </defs>
 </svg>
-<script src="assets/data.js"></script>
-<script src="assets/app.js"></script>
+<script src="assets/data.js?v=202611141232"></script>
+<script src="assets/app.js?v=202611141232"></script>
 </body>
 </html>

@@ -123,7 +123,7 @@ const DEFAULT_CONTACTS = {
 const S = {
   user: null,             // {id, name, email, createdAt}
   settings: { ...DEFAULT_SETTINGS },
-  contacts: structuredClone(DEFAULT_CONTACTS),
+  contacts: JSON.parse(JSON.stringify(DEFAULT_CONTACTS)),
   calls: [],
   dir: null,              // FileSystemDirectoryHandle for the local history folder
   filters: null,
@@ -1340,7 +1340,7 @@ function authScreen(mode = "login", note = "") {
 async function startApp(user, fresh = false) {
   S.user = user; NS = user.id;
   S.settings = { ...DEFAULT_SETTINGS, ...LS.get("settings", {}) };
-  S.contacts = { ...structuredClone(DEFAULT_CONTACTS), ...LS.get("contacts", {}) };
+  S.contacts = { ...JSON.parse(JSON.stringify(DEFAULT_CONTACTS)), ...LS.get("contacts", {}) };
   if (!S.contacts.user.name && !S.contacts.user.email) { S.contacts.user = { name: user.name, email: user.email, phone: "" }; saveContacts(); }
   S.filters = LS.get("filters", null);
   try { S.calls = (await idb.all()).sort((a, b) => b.createdAt.localeCompare(a.createdAt)); } catch { S.calls = []; }
@@ -1360,8 +1360,15 @@ async function startApp(user, fresh = false) {
 }
 
 function boot() {
-  const u = auth.currentSession();
-  if (u) startApp(u); else authScreen(GLS.get("users", null) ? "login" : "signup");
+  const fresh = () => authScreen(GLS.get("users", null) ? "login" : "signup");
+  let u = null;
+  try { u = auth.currentSession(); } catch { u = null; }
+  if (!u) { fresh(); return; }
+  startApp(u).catch((e) => {          // never leave a blank page: drop the session and show login
+    console.error("CallGuard start failed", e);
+    GLS.del("session");
+    authScreen("login", `Please log in again. (${esc(e.message || e)})`);
+  });
 }
 boot();
 })();
