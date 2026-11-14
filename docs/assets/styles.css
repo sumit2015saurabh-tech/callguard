@@ -368,3 +368,17 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13.5px; }
   .kv { grid-template-columns: 1fr 1fr; }
   .mode-pill { display: none; }
 }
+
+/* ---------- auth ---------- */
+.auth-wrap {
+  min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 32px 16px;
+  background: radial-gradient(1200px 600px at 10% -10%, #dcefe9 0%, transparent 60%),
+              radial-gradient(900px 500px at 110% 110%, #e7e6f7 0%, transparent 60%), var(--bg);
+}
+.auth-card { width: min(440px, 100%); padding: 30px 30px 24px; box-shadow: var(--shadow-lg); }
+.auth-card h2 { font-size: 22px; }
+.auth-switch { text-align: center; margin-top: 18px; color: var(--text-2); font-size: 13.5px; }
+.auth-switch a { font-weight: 650; text-decoration: none; }
+.user-chip { display: flex; align-items: center; gap: 10px; padding: 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.user-chip .icon-btn { width: 32px; height: 32px; }
+.usage-mini + .user-chip { margin-top: -6px; }

@@ -68,15 +68,21 @@ const tip = {
 };
 
 /* ============================== storage ============================== */
-const LS = {
+let NS = "";   // signed-in user id: every key and database below is per user
+const GLS = {  // global (not per-user): accounts + session
   get(k, def) { try { const v = localStorage.getItem("cg." + k); return v ? JSON.parse(v) : def; } catch { return def; } },
   set(k, v) { try { localStorage.setItem("cg." + k, JSON.stringify(v)); } catch { /* storage blocked */ } },
+  del(k) { try { localStorage.removeItem("cg." + k); sessionStorage.removeItem("cg." + k); } catch { /* ignore */ } },
+};
+const LS = {
+  get(k, def) { try { const v = localStorage.getItem(`cg.u.${NS}.${k}`); return v ? JSON.parse(v) : def; } catch { return def; } },
+  set(k, v) { try { localStorage.setItem(`cg.u.${NS}.${k}`, JSON.stringify(v)); } catch { /* storage blocked */ } },
 };
 
 const idb = (() => {
   let p;
   const open = () => p || (p = new Promise((res, rej) => {
-    const r = indexedDB.open("callguard", 1);
+    const r = indexedDB.open(`callguard_${NS}`, 1);
     r.onupgradeneeded = () => { const d = r.result; d.createObjectStore("calls", { keyPath: "id" }); d.createObjectStore("audio"); d.createObjectStore("kv"); };
     r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
   }));
@@ -115,11 +121,12 @@ const DEFAULT_CONTACTS = {
 };
 
 const S = {
-  settings: { ...DEFAULT_SETTINGS, ...LS.get("settings", {}) },
-  contacts: { ...DEFAULT_CONTACTS, ...LS.get("contacts", {}) },
+  user: null,             // {id, name, email, createdAt}
+  settings: { ...DEFAULT_SETTINGS },
+  contacts: structuredClone(DEFAULT_CONTACTS),
   calls: [],
   dir: null,              // FileSystemDirectoryHandle for the local history folder
-  filters: LS.get("filters", null),
+  filters: null,
   overviewRange: 14,
   pending: null,          // audio chosen on the Analyze page
 };
@@ -1092,6 +1099,15 @@ VIEWS.settings = (root) => {
       </div>
       <div class="stack">
         <div class="card card-pad stack">
+          <div class="row"><span class="avatar" style="width:40px;height:40px">${esc(initials(S.user.name))}</span>
+            <div><h3>${esc(S.user.name)}</h3><div class="faint" style="font-size:12.5px">@${esc(S.user.id)} · ${esc(S.user.email)} · member since ${fmtDate(S.user.createdAt)}</div></div>
+            <div class="spacer"></div><button class="btn btn-sm" id="logout2">${icon("logout")}Log out</button></div>
+          <form class="form-grid" id="pwForm" style="grid-template-columns:1fr 1fr auto;align-items:end">
+            <div class="field"><label for="pwCur">Current password</label><input class="input" id="pwCur" type="password" autocomplete="current-password" required></div>
+            <div class="field"><label for="pwNew">New password</label><input class="input" id="pwNew" type="password" autocomplete="new-password" required></div>
+            <button class="btn">Change password</button></form>
+        </div>
+        <div class="card card-pad stack">
           <h3>Workspace</h3>
           <div class="field"><label for="sWs">Workspace name</label><input class="input" id="sWs" data-k="workspace" value="${esc(st.workspace)}"></div>
           <label class="row" style="cursor:pointer"><input type="checkbox" id="sNotif" ${st.browserNotify ? "checked" : ""}> <span>Show a browser notification on this device when fraud is detected</span></label>
@@ -1112,6 +1128,12 @@ VIEWS.settings = (root) => {
       </div>
     </div>`;
 
+  $("#logout2").onclick = () => auth.logout();
+  $("#pwForm").onsubmit = async (e) => {
+    e.preventDefault();
+    try { await auth.changePassword(S.user.id, $("#pwCur").value, $("#pwNew").value); e.target.reset(); toast("Password changed"); }
+    catch (ex) { toast(ex.message, "alert"); }
+  };
   $("#modeSeg").onclick = (e) => {
     const b = e.target.closest("button"); if (!b) return;
     if (b.dataset.m === "live" && !st.transcriberUrl) toast("Add the transcriber URL so live calls can be analysed", "alert");
@@ -1159,7 +1181,7 @@ VIEWS.settings = (root) => {
   };
   $("#wipe").onclick = async () => {
     if (!await modal({ title: "Delete all CallGuard data?", body: `This removes all <b>${S.calls.length}</b> calls, audio, contacts and settings from this browser. It cannot be undone. Files in your history folder are not touched.`, confirm: "Delete everything", danger: true })) return;
-    await idb.clear(); try { Object.keys(localStorage).filter((k) => k.startsWith("cg.")).forEach((k) => localStorage.removeItem(k)); } catch { /* ignore */ }
+    await idb.clear(); try { Object.keys(localStorage).filter((k) => k.startsWith(`cg.u.${NS}.`)).forEach((k) => localStorage.removeItem(k)); } catch { /* ignore */ }
     location.reload();
   };
 };
@@ -1194,14 +1216,152 @@ async function seedSamples() {
   paintChrome(); toast(`Loaded ${n} sample calls`); route();
 }
 
+/* ============================== accounts: sign up + log in ==============================
+   No server: accounts live in this browser. Passwords are never stored, only a salted
+   PBKDF2-SHA-256 hash (210,000 rounds). Each user gets their own database and settings. */
+const auth = {
+  users() { return GLS.get("users", {}); },
+  saveUsers(u) { GLS.set("users", u); },
+  b64(buf) { return btoa(String.fromCharCode(...new Uint8Array(buf))); },
+  async hash(password, saltB64, iter = 210000) {
+    const salt = Uint8Array.from(atob(saltB64), (c) => c.charCodeAt(0));
+    const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveBits"]);
+    return this.b64(await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt, iterations: iter }, key, 256));
+  },
+  same(a, b) { if (a.length !== b.length) return false; let x = 0; for (let i = 0; i < a.length; i++) x |= a.charCodeAt(i) ^ b.charCodeAt(i); return x === 0; },
+  find(login) {
+    const u = this.users(), l = String(login || "").trim().toLowerCase();
+    if (u[l]) return u[l];
+    return Object.values(u).find((x) => x.email.toLowerCase() === l) || null;
+  },
+  passwordProblem(p) {
+    if (p.length < 8) return "Password must be at least 8 characters.";
+    if (!/[A-Za-z]/.test(p) || !/[0-9]/.test(p)) return "Use at least one letter and one number.";
+    return "";
+  },
+  async signup({ name, email, id, password }) {
+    id = id.trim().toLowerCase(); email = email.trim();
+    if (!name.trim()) throw new Error("Enter your full name.");
+    if (!isEmail(email)) throw new Error("Enter a valid email address.");
+    if (!/^[a-z0-9_.]{3,20}$/.test(id)) throw new Error("User ID: 3–20 characters, letters, numbers, dot or underscore.");
+    const pp = this.passwordProblem(password); if (pp) throw new Error(pp);
+    const users = this.users();
+    if (users[id]) throw new Error("That user ID is taken. Try another.");
+    if (Object.values(users).some((x) => x.email.toLowerCase() === email.toLowerCase())) throw new Error("An account with this email already exists. Log in instead.");
+    const salt = this.b64(crypto.getRandomValues(new Uint8Array(16)));
+    users[id] = { id, name: name.trim(), email, salt, iter: 210000, hash: await this.hash(password, salt), createdAt: new Date().toISOString() };
+    this.saveUsers(users);
+    return users[id];
+  },
+  async login(login, password) {
+    const u = this.find(login);
+    // same work whether or not the user exists, so the response time doesn't reveal valid IDs
+    const h = await this.hash(password, u ? u.salt : "AAAAAAAAAAAAAAAAAAAAAA==", u ? u.iter : 210000);
+    if (!u || !this.same(h, u.hash)) throw new Error("User ID / email or password is incorrect.");
+    const users = this.users(); users[u.id].lastLogin = new Date().toISOString(); this.saveUsers(users);
+    return u;
+  },
+  async changePassword(id, current, next) {
+    const users = this.users(), u = users[id];
+    if (!this.same(await this.hash(current, u.salt, u.iter), u.hash)) throw new Error("Current password is incorrect.");
+    const pp = this.passwordProblem(next); if (pp) throw new Error(pp);
+    u.salt = this.b64(crypto.getRandomValues(new Uint8Array(16))); u.iter = 210000; u.hash = await this.hash(next, u.salt);
+    this.saveUsers(users);
+  },
+  startSession(u, remember) {
+    const s = JSON.stringify({ id: u.id, at: Date.now() });
+    try { (remember ? localStorage : sessionStorage).setItem("cg.session", s); } catch { /* ignore */ }
+  },
+  currentSession() {
+    try {
+      const s = JSON.parse(sessionStorage.getItem("cg.session") || localStorage.getItem("cg.session") || "null");
+      if (!s) return null;
+      if (Date.now() - s.at > 30 * 24 * 3600 * 1000) { GLS.del("session"); return null; }   // 30-day max
+      return this.users()[s.id] || null;
+    } catch { return null; }
+  },
+  logout() { GLS.del("session"); location.hash = ""; location.reload(); },
+};
+
+function authScreen(mode = "login", note = "") {
+  const box = $("#auth");
+  box.hidden = false; $("#appRoot").hidden = true;
+  document.title = mode === "login" ? "Log in · CallGuard" : "Sign up · CallGuard";
+  box.innerHTML = `
+    <div class="auth-card card">
+      <div class="brand" style="padding:0 0 14px"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32"><rect width="32" height="32" rx="9"/><path d="M16 6l8 3v6c0 5-3.4 8.6-8 10-4.6-1.4-8-5-8-10V9z"/></svg></span>
+        <div><div class="brand-name">CallGuard</div><div class="brand-sub">Scam-call protection</div></div></div>
+      <h2>${mode === "login" ? "Welcome back" : "Create your account"}</h2>
+      <p class="muted" style="margin:4px 0 18px">${mode === "login" ? "Log in with your user ID (or email) and password." : "Sign up with your email, choose a user ID, and set a password."}</p>
+      ${note ? `<div class="banner" style="margin-bottom:14px">${icon("check")}<div>${note}</div></div>` : ""}
+      <div class="banner warn" id="authErr" hidden style="margin-bottom:14px"></div>
+      <form id="authForm" class="stack" style="gap:14px" novalidate>
+        ${mode === "signup" ? `
+          <div class="field"><label for="suName">Full name</label><input class="input" id="suName" autocomplete="name" required></div>
+          <div class="field"><label for="suEmail">Email</label><input class="input" id="suEmail" type="email" autocomplete="email" required></div>
+          <div class="field"><label for="suId">User ID</label><input class="input" id="suId" autocomplete="username" required placeholder="e.g. sumit_s" maxlength="20">
+            <span class="hint">3–20 characters: letters, numbers, dot or underscore. You'll log in with this.</span></div>
+          <div class="field"><label for="suPw">Password</label><input class="input" id="suPw" type="password" autocomplete="new-password" required>
+            <span class="hint">At least 8 characters, with a letter and a number.</span></div>
+          <div class="field"><label for="suPw2">Confirm password</label><input class="input" id="suPw2" type="password" autocomplete="new-password" required></div>`
+        : `
+          <div class="field"><label for="liId">User ID or email</label><input class="input" id="liId" autocomplete="username" required></div>
+          <div class="field"><label for="liPw">Password</label><input class="input" id="liPw" type="password" autocomplete="current-password" required></div>
+          <label class="row" style="cursor:pointer;font-size:13.5px"><input type="checkbox" id="liRemember" checked> Keep me logged in on this device</label>`}
+        <button class="btn btn-primary" id="authSubmit" style="height:42px">${mode === "login" ? "Log in" : "Create account"}</button>
+      </form>
+      <div class="auth-switch">${mode === "login"
+        ? `New to CallGuard? <a href="#" data-mode="signup">Sign up</a>`
+        : `Already have an account? <a href="#" data-mode="login">Log in</a>`}</div>
+      <div class="faint" style="font-size:12px;margin-top:14px;text-align:center">Accounts and call history are stored securely in this browser on this device.</div>
+    </div>`;
+  $$("[data-mode]", box).forEach((a) => a.onclick = (e) => { e.preventDefault(); authScreen(a.dataset.mode); });
+  const err = (m) => { const e = $("#authErr"); e.hidden = !m; e.innerHTML = m ? `${icon("alert")}<div>${esc(m)}</div>` : ""; };
+  (mode === "login" ? $("#liId") : $("#suName")).focus();
+  $("#authForm").onsubmit = async (e) => {
+    e.preventDefault(); err("");
+    const btn = $("#authSubmit"); btn.disabled = true; const label = btn.textContent; btn.innerHTML = `<span class="spin"></span>`;
+    try {
+      if (mode === "signup") {
+        if ($("#suPw").value !== $("#suPw2").value) throw new Error("The two passwords don't match.");
+        const u = await auth.signup({ name: $("#suName").value, email: $("#suEmail").value, id: $("#suId").value, password: $("#suPw").value });
+        authScreen("login", `Account <b>${esc(u.id)}</b> created. Log in with your user ID and password.`);
+        $("#liId").value = u.id; $("#liPw").focus();
+        return;
+      }
+      const u = await auth.login($("#liId").value, $("#liPw").value);
+      auth.startSession(u, $("#liRemember").checked);
+      await startApp(u, true);
+    } catch (ex) { err(ex.message); btn.disabled = false; btn.textContent = label; }
+  };
+}
+
 /* ============================== boot ============================== */
-async function boot() {
+async function startApp(user, fresh = false) {
+  S.user = user; NS = user.id;
+  S.settings = { ...DEFAULT_SETTINGS, ...LS.get("settings", {}) };
+  S.contacts = { ...structuredClone(DEFAULT_CONTACTS), ...LS.get("contacts", {}) };
+  if (!S.contacts.user.name && !S.contacts.user.email) { S.contacts.user = { name: user.name, email: user.email, phone: "" }; saveContacts(); }
+  S.filters = LS.get("filters", null);
   try { S.calls = (await idb.all()).sort((a, b) => b.createdAt.localeCompare(a.createdAt)); } catch { S.calls = []; }
   try { S.dir = (await idb.kvGet("dir")) || null; } catch { S.dir = null; }
+  $("#auth").hidden = true; $("#appRoot").hidden = false;
+  $("#userChip").innerHTML = `<span class="avatar">${esc(initials(user.name))}</span>
+    <div style="min-width:0;flex:1"><div style="font-weight:650;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(user.name)}</div>
+    <div class="faint" style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">@${esc(user.id)}</div></div>
+    <button class="icon-btn" id="logoutBtn" title="Log out" aria-label="Log out">${icon("logout")}</button>`;
+  $("#logoutBtn").onclick = () => auth.logout();
   $("#menuBtn").onclick = () => $("#sidebar").classList.toggle("open");
   window.addEventListener("hashchange", route);
+  if (fresh && !location.hash) location.hash = "#/overview";
   paintChrome();
   route();
+  if (fresh) toast(`Welcome, ${user.name.split(" ")[0]}`, "shield");
+}
+
+function boot() {
+  const u = auth.currentSession();
+  if (u) startApp(u); else authScreen(GLS.get("users", null) ? "login" : "signup");
 }
 boot();
 })();

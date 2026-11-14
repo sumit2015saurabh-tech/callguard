@@ -6,6 +6,17 @@ CallGuard is the customer-facing dashboard for a scam-call detection service. A 
 
 It is a static single-page app (HTML/CSS/JS, no build step), hosted on GitHub Pages from `docs/`.
 
+## Accounts (required)
+
+Nobody sees the dashboard without logging in.
+
+- **Sign up:** full name, email, a unique **user ID** (3–20 characters: letters, numbers, `.` or `_`) and a password (8+ characters with a letter and a number), entered twice to confirm.
+- **Log in:** user ID (or email) plus password. You can stay logged in on the device for up to 30 days.
+- **Per-user data:** each account has its own calls, contacts, settings and history.
+- **Settings → Account:** change password, log out.
+- **Security:** passwords are never stored. Only a salted PBKDF2-SHA-256 hash (210,000 rounds) is kept, compared in constant time.
+- **Limitation:** there is no server yet, so accounts live in the browser where they were created. To log in from any device, connect an auth backend (Firebase Auth, Supabase or your own API) behind the same screens.
+
 ## Fraud categories
 
 | Code | Category | Banking? |
