@@ -8,7 +8,7 @@
     try {
       const s = await navigator.mediaDevices.getUserMedia({ audio: true });
       s.getTracks().forEach((t) => t.stop());
-      msg.innerHTML = '<span class="ok">Microphone allowed.</span> Go back to your call and press <b>Capture this call</b>.';
+      msg.innerHTML = '<span class="ok">Microphone allowed.</span> Go back to your call; CallGuard now records your voice too.';
       chrome.runtime.sendMessage({ type: "cg:mic-granted" }).catch(() => {});
       setTimeout(() => window.close(), 2500);
     } catch (e) {

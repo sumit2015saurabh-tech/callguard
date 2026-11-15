@@ -50,6 +50,10 @@
       sendResponse({ ok: true });
       return;
     }
+    if (msg.type === "cg:add-mic") {             // permission granted after the capture started
+      addMic().then(sendResponse, (e) => sendResponse({ ok: false, reason: (e && e.message) || String(e) }));
+      return true;
+    }
     if (msg.type === "cg:offscreen-status") sendResponse({ ok: true, live: snapshot() });
   });
 
@@ -313,10 +317,18 @@
     } catch (e) {
       S.session.mic = false;
       S.session.micError = e && e.name === "NotAllowedError"
-        ? "Chrome blocked the microphone for CallGuard. Allow it in the CallGuard tab that opens, then capture again."
+        ? "Chrome hasn't allowed the microphone for CallGuard. Press “Allow microphone” in the CallGuard popup to record your voice too."
         : (e && e.message) || "Microphone not available";
-      chrome.runtime.sendMessage({ target: "background", type: "cg:mic-missing" }).catch(() => {});
+      chrome.runtime.sendMessage({ target: "background", type: "cg:mic-missing", reason: S.session.micError }).catch(() => {});
     }
+  }
+
+  /** Add the microphone to a capture that started before Chrome had allowed it. */
+  async function addMic() {
+    if (!S.session) return { ok: false, reason: "No capture is running." };
+    if (!S.ctx || !S.merger) return { ok: false, reason: "The recorder isn't ready." };
+    if (!S.mic) await openMic();
+    return { ok: true, mic: !!S.mic, micError: S.session.micError || "" };
   }
 
   function closeMic() {

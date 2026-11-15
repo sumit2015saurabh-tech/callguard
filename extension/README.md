@@ -250,6 +250,8 @@ dashboard boots.
 
 The recording is always stereo: the caller on the left channel (Speaker 1), your microphone on the
 right (Speaker 2). The transcription service transcribes each side
-separately and labels the turns. The first time you capture, a tab (`mic.html`) asks for the
-microphone once, because the hidden recorder can't show Chrome's prompt; allow it, then press
-**Capture this call** again. If the mic is blocked, the dock and popup say "caller only".
+separately and labels the turns. Chrome can't show its microphone prompt inside the hidden
+recorder, so the first time you capture the popup asks for it: capture starts first, then the mic
+is added to the running recording once you allow it. If the prompt is refused (or you start from
+the dock), the call is still recorded caller-only, and **Allow microphone** in the popup opens the
+one-time grant page (`mic.html`) — no tab opens automatically.

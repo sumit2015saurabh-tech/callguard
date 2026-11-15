@@ -25,6 +25,17 @@ async function setSettings(patch) {
   return next;
 }
 
+/* Caller ID and source are often painted a moment after the call screen: stamp them on the
+   recordings saved before then, so CallGuard receives both with every part. */
+async function backfillCaller(sessionId, caller) {
+  if (!sessionId || !caller) return;
+  const clips = await store.clips().catch(() => []);
+  for (const c of clips) {
+    if (c.sessionId !== sessionId || c.result) continue;
+    await store.patchClip(c.id, { caller, platform: caller.platform || c.platform || "" }).catch(() => {});
+  }
+}
+
 /* ---------- toolbar badge ---------- */
 function paintBadge() {
   if (!live.active) {
@@ -65,12 +76,6 @@ async function ensureOffscreen() {
   await creating;
 }
 
-/** "granted" | "denied" | "prompt" | "" (unknown) for the extension's microphone access. */
-async function micPermission() {
-  try { return (await navigator.permissions.query({ name: "microphone" })).state; }
-  catch { return ""; }
-}
-
 /** Caller identity is read from the call screen by content.js in the call tab. */
 async function askCaller(tabId, platform) {
   const read = async () => {
@@ -97,17 +102,6 @@ async function startCapture(tabId) {
   const platform = tab ? core.platformFor(tab.url) : "";
   if (!tab || !platform) {
     return { ok: false, reason: "Open the call in web.telegram.org or web.whatsapp.com, then start the capture there." };
-  }
-
-  /* Two-way calls need the microphone. The hidden recorder can't ask for it, so the first time
-     we open a small page that asks; the user then presses Capture again. */
-  const pre = await getSettings();
-  if (pre.duplex) {
-    const state = await micPermission();
-    if (state === "prompt") {
-      await chrome.tabs.create({ url: chrome.runtime.getURL("mic.html") });
-      return { ok: false, reason: "Allow the microphone in the tab that just opened (once), then press “Capture this call” again so your voice is recorded too." };
-    }
   }
 
   let streamId;
@@ -419,10 +413,23 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     paintBadge();
     return;
   }
-  if (msg.type === "cg:mic-missing") {             // mic failed after all: offer the grant page
-    micPermission().then((state) => {
-      if (state !== "granted") chrome.tabs.create({ url: chrome.runtime.getURL("mic.html"), active: false }).catch(() => {});
-    });
+  if (msg.type === "cg:mic-missing") {             // the caller's audio is still recorded
+    if (live.active) {
+      live.mic = false;
+      live.micError = msg.reason || live.micError || "";
+      paintBadge();
+    }
+    return;
+  }
+  if (msg.type === "cg:mic-granted") {             // allowed in mic.html: add it to a running capture
+    if (!live.active) return;
+    chrome.runtime.sendMessage({ target: "offscreen", type: "cg:add-mic" })
+      .then((r) => {
+        if (r && r.mic) { live.mic = true; live.micError = ""; }
+        else if (r && r.micError) live.micError = r.micError;
+        paintBadge();
+      })
+      .catch(() => {});
     return;
   }
   if (msg.type === "cg:stopped") {
@@ -437,6 +444,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       live.caller = core.cleanCaller({ ...msg.caller, platform: live.platform });
       /* Clips and the whole-call file are saved with the recorder's copy, so update it too. */
       chrome.runtime.sendMessage({ target: "offscreen", type: "cg:set-caller", caller: live.caller }).catch(() => {});
+      backfillCaller(live.sessionId, live.caller).catch(() => {});
       paintBadge();
     }
     return;

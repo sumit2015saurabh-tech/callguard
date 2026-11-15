@@ -381,6 +381,7 @@
       const res = await send({ type: "cg:start" });
       busy = false;
       if (!res || !res.ok) hint = (res && res.reason) || "Couldn't start the capture.";
+      else if (res.micError) hint = res.micError;
       await poll();
     }
 

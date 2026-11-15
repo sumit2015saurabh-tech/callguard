@@ -25,7 +25,8 @@
   const isUnsent = (c) => !c.result && !c.queuedAt && c.skipWhy !== "too-long";
 
   let live = { active: false };
-  let settings = { dashboardUrl: DASH };
+  let settings = { dashboardUrl: DASH, duplex: true };
+  let askingMic = false;
   let activeTab = null;
   let callTabs = [];
   let clips = [];
@@ -51,7 +52,7 @@
     ]);
     if (st && st.ok) {
       live = st.live || { active: false };
-      if (st.settings && st.settings.dashboardUrl) settings = { dashboardUrl: st.settings.dashboardUrl };
+      if (st.settings) settings = { ...settings, ...st.settings };
     }
     activeTab = (tabList && tabList[0]) || null;
     callTabs = tabs || [];
@@ -81,6 +82,9 @@
     $("#mainBtn").disabled = !on && !isCallTab(activeTab) && !callTabs.length;
     $("#note").hidden = !(on && live.micError);
     $("#note").textContent = on && live.micError ? `Your voice isn't being recorded: ${live.micError}` : "";
+    const micOff = on && settings.duplex !== false && !live.mic;
+    $("#micBtn").hidden = !micOff;
+    $("#micBtn").title = (on && live.micError) || "Chrome needs your OK once to record your side of the call.";
     $("#dashBtn").onclick = () => chrome.tabs.create({ url: settings.dashboardUrl || DASH });
   }
 
@@ -122,11 +126,16 @@
     const clarity = c.clarity
       ? `<div class="sub">Clarity ${c.clarity.score}/100 · ${esc(c.clarity.verdict)}${c.clarity.reasons.length ? ` (${esc(c.clarity.reasons.join(", "))})` : ""}</div>`
       : "";
+    const origin = [
+      c.platform ? `source ${core.platformName(c.platform)}` : "",
+      c.caller && c.caller.label ? `caller ${c.caller.label}` : "",
+    ].filter(Boolean).join(" · ");
     li.innerHTML = `
       <div class="row between">
         <span class="title">${esc(clock(c.createdAt))} <span class="sub">· ${esc(fmtDur(c.duration))} · ${esc(kb(c.size))}${c.kind === "call" ? " · whole call" : " · clip"}${c.mic ? " · mic" : ""}</span></span>
         <span class="chip ${st.cls}">${esc(st.text)}</span>
       </div>
+      ${origin ? `<div class="sub">${esc(origin)}</div>` : ""}
       ${c.result ? `<div class="sub">${esc(resultLine(c.result))}</div>` : ""}
       ${c.error ? `<div class="sub err">${esc(c.error)}</div>` : ""}
       ${clarity}
@@ -174,6 +183,9 @@
 
   function bind() {
     $("#mainBtn").onclick = onMain;
+    /* Never automatic: a mic prompt can't be shown anywhere but a visible extension page,
+       so this opens the one-time grant page only when the user asks for it. */
+    $("#micBtn").onclick = () => chrome.tabs.create({ url: chrome.runtime.getURL("mic.html") });
     $("#sendAll").onclick = async () => {
       const r = await send({ type: "cg:send-all" });
       toast(r && r.ok ? `${r.queued} clip${r.queued === 1 ? "" : "s"} queued for CallGuard.` : (r && r.reason) || "Couldn't queue the clips.");
@@ -232,11 +244,37 @@
       const r = await send({ type: "cg:start", tabId: target.id });
       if (r && r.ok) {
         toast(r.micError ? "Capturing, but the microphone wasn't available." : "Capturing this call.");
+        if (!r.mic && settings.duplex !== false) await askMicForCapture();
       } else {
         toast((r && r.reason) || "Couldn't start the capture.");
       }
     }
     await refresh();
+  }
+
+  /* Chrome shows the microphone prompt only on a visible extension page, never in the hidden
+     recorder. Ask here, in the popup, and add the mic to the capture that is already running: if
+     the popup closes or the prompt is refused, the call is still recorded (caller only). */
+  async function askMicForCapture() {
+    if (askingMic) return;
+    askingMic = true;
+    try {
+      let state = "";
+      try { state = (await navigator.permissions.query({ name: "microphone" })).state; } catch { /* ask anyway */ }
+      if (state === "denied") {
+        toast("Your microphone is blocked for CallGuard. Press “Allow microphone” to unblock it.");
+        return;
+      }
+      const mic = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mic.getTracks().forEach((t) => t.stop());
+      const r = await chrome.runtime.sendMessage({ target: "offscreen", type: "cg:add-mic" }).catch(() => null);
+      if (r && r.mic) toast("Your voice is being recorded too.");
+      else toast("Capturing the caller only — your microphone wasn't available.");
+    } catch {
+      toast("Capturing the caller only. Press “Allow microphone” to add your voice.");
+    } finally {
+      askingMic = false;
+    }
   }
 
   function toast(msg) {
