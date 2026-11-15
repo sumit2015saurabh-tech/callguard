@@ -316,10 +316,16 @@
       S.session.micError = "";
     } catch (e) {
       S.session.mic = false;
-      S.session.micError = e && e.name === "NotAllowedError"
-        ? "Chrome hasn't allowed the microphone for CallGuard. Press “Allow microphone” in the CallGuard popup to record your voice too."
-        : (e && e.message) || "Microphone not available";
-      chrome.runtime.sendMessage({ target: "background", type: "cg:mic-missing", reason: S.session.micError }).catch(() => {});
+      let perm = "";
+      try { perm = (await navigator.permissions.query({ name: "microphone" })).state; } catch { /* unknown */ }
+      S.session.micError = perm === "granted"
+        /* Allowed for CallGuard, but it still couldn't open (device busy/unplugged, or Chrome won't add it to
+           a recording that started before the permission): a fresh capture picks it up. */
+        ? `The microphone is allowed but couldn't be opened${e && e.name && e.name !== "NotAllowedError" ? ` (${e.name})` : ""}. Press Stop capture, then Capture this call again to add your voice.`
+        : e && e.name === "NotAllowedError"
+          ? "Chrome hasn't allowed the microphone for CallGuard yet. Click Allow on the CallGuard page that opens (once only)."
+          : (e && e.message) || "Microphone not available";
+      chrome.runtime.sendMessage({ target: "background", type: "cg:mic-missing", reason: S.session.micError, perm }).catch(() => {});
     }
   }
 

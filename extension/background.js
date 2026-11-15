@@ -145,7 +145,29 @@ async function startCapture(tabId) {
     mic: !!res.mic, micError: res.micError || "", duplex: !!settings.duplex,
   };
   paintBadge();
+  /* Mic not allowed yet: ask by itself (Chrome needs one click, once ever). The caller is already being
+     recorded; when the user allows it, mic.html sends cg:mic-granted and the mic joins THIS capture. */
+  if (settings.duplex && !res.mic) openMicGrant("capture").catch(() => {});
   return { ok: true, sessionId, mic: !!res.mic, micError: res.micError || "" };
+}
+
+/* ---------- microphone permission (needs the user's OK once; then it is automatic) ---------- */
+async function micPermission() {
+  try { return (await navigator.permissions.query({ name: "microphone" })).state; }   // granted|denied|prompt
+  catch { return ""; }
+}
+let micGrantOpenedAt = 0;
+/** Open the one-time "Allow microphone" page (focused, so Chrome's prompt is seen), unless the mic is
+    already allowed or the page was opened in the last minute. */
+async function openMicGrant(reason) {
+  if ((await micPermission()) === "granted") return false;
+  if (Date.now() - micGrantOpenedAt < 60000) return false;
+  const url = chrome.runtime.getURL("mic.html");
+  const open = await chrome.tabs.query({ url }).catch(() => []);
+  micGrantOpenedAt = Date.now();
+  if (open.length) { await chrome.tabs.update(open[0].id, { active: true }).catch(() => {}); return true; }
+  await chrome.tabs.create({ url: `${url}?from=${encodeURIComponent(reason || "")}`, active: true });
+  return true;
 }
 
 async function stopCapture(reason) {
@@ -451,8 +473,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (live.active) {
       live.mic = false;
       live.micError = msg.reason || live.micError || "";
+      live.micPerm = msg.perm || "";
       paintBadge();
+      if (msg.perm !== "granted") openMicGrant("capture").catch(() => {});   // ask for the one-time OK by itself
     }
+    return;
+  }
+  if (msg.type === "cg:open-mic-settings") {       // mic was blocked earlier: open CallGuard's site settings
+    chrome.tabs.create({ url: `chrome://settings/content/siteDetails?site=${encodeURIComponent(`chrome-extension://${chrome.runtime.id}`)}` })
+      .catch(() => chrome.tabs.create({ url: "chrome://settings/content/microphone" }).catch(() => {}));
     return;
   }
   if (msg.type === "cg:mic-granted") {             // allowed in mic.html: add it to a running capture
@@ -552,9 +581,13 @@ chrome.tabs.onUpdated.addListener((tabId, info) => {
   if (live.active && live.tabId === tabId && info.url && !core.isCallUrl(info.url)) stopCapture("left the call site");
 });
 
-chrome.runtime.onInstalled.addListener(async () => {
+chrome.runtime.onInstalled.addListener(async (details) => {
   await chrome.storage.local.set({ cgSettings: await getSettings() });
   paintBadge();
+  /* Ask for the microphone once, right after install/update, so calls record both sides automatically. */
+  if (details && ["install", "update"].includes(details.reason) && (await getSettings()).duplex) {
+    openMicGrant(details.reason).catch(() => {});
+  }
 });
 
 /* Picks up anything the previous worker left queued (a 20 s part can outlive it). */

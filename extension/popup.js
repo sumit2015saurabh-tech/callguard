@@ -82,7 +82,8 @@
     $("#mainBtn").disabled = !on && !isCallTab(activeTab) && !callTabs.length;
     $("#note").hidden = !(on && live.micError);
     $("#note").textContent = on && live.micError ? `Your voice isn't being recorded: ${live.micError}` : "";
-    const micOff = on && settings.duplex !== false && !live.mic;
+    /* Already allowed (it just couldn't join this running capture): no "Allow" button, the note says restart. */
+    const micOff = on && settings.duplex !== false && !live.mic && live.micPerm !== "granted";
     $("#micBtn").hidden = !micOff;
     $("#micBtn").title = (on && live.micError) || "Chrome needs your OK once to record your side of the call.";
     $("#dashBtn").onclick = () => chrome.tabs.create({ url: settings.dashboardUrl || DASH });
