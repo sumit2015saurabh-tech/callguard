@@ -247,7 +247,10 @@ async function findOrOpenDashboard(base, focus) {
     tab = tabs.find((t) => { try { return new URL(t.url || "").pathname.startsWith(path); } catch { return false; } }) || tabs[0] || null;
   } catch { /* no access */ }
   if (tab) {
-    if (focus) await chrome.tabs.update(tab.id, { active: true }).catch(() => {});
+    if (focus) {
+      await chrome.tabs.update(tab.id, { active: true }).catch(() => {});
+      if (chrome.windows && tab.windowId != null) await chrome.windows.update(tab.windowId, { focused: true }).catch(() => {});
+    }
   } else {
     tab = await chrome.tabs.create({ url: base, active: !!focus });
     if (tab.id == null) throw new Error("Chrome blocked opening the CallGuard tab.");
@@ -334,6 +337,8 @@ async function sendClipToDashboard(id, opts = {}) {
       tabTitle: clip.tabTitle || "",
       platform,
       caller,
+      sessionId: clip.sessionId || "",      // parts + whole recording of one call -> ONE history entry
+      kind: clip.kind || "",
       audio: await blobToBase64(blob),
     },
   }).catch((e) => ({ ok: false, reason: (e && e.message) || String(e) }));
@@ -406,6 +411,26 @@ function isStalePart(clip) {
   return Date.now() - Date.parse(clip.createdAt || 0) > STALE_PART_MS;
 }
 
+/** A live part is redundant once the whole recording of the same call is there to be analysed
+    (it covers the same audio with full context). Not when that recording is too long to analyse. */
+async function coveredByWholeCall(clip) {
+  if (!clip || clip.kind !== "chunk" || !clip.sessionId) return false;
+  if (live.active && live.sessionId === clip.sessionId) return false;
+  const all = await store.clips().catch(() => []);
+  return all.some((c) => c.kind === "call" && c.sessionId === clip.sessionId && c.skipWhy !== "too-long" && c.skipWhy !== "too-short");
+}
+
+/** "View analysis": open (or reuse) the dashboard tab straight on that call's analysis. */
+async function openAnalysis(token) {
+  if (!/^[\w-]{4,40}$/.test(String(token || ""))) return { ok: false, reason: "That recording has no CallGuard token yet." };
+  const settings = await getSettings();
+  const base = core.normaliseDashboardUrl(settings.dashboardUrl);
+  const tab = await findOrOpenDashboard(base, true);
+  await chrome.tabs.update(tab.id, { url: `${base.split("#")[0]}#/call/${token}`, active: true });
+  if (tab.windowId != null) await chrome.windows.update(tab.windowId, { focused: true }).catch(() => {});
+  return { ok: true };
+}
+
 async function pump() {
   if (pumping) return;
   pumping = true;
@@ -414,7 +439,7 @@ async function pump() {
       const id = urgent.length ? urgent.shift() : queue.shift();
       const clip = await store.clip(id).catch(() => null);
       if (!clip) continue;                                            // deleted from the popup meanwhile
-      if (isStalePart(clip)) { await store.deleteClip(id).catch(() => {}); continue; }
+      if (isStalePart(clip) || await coveredByWholeCall(clip)) { await store.deleteClip(id).catch(() => {}); continue; }
       await sendNow(id);
     }
   } finally { pumping = false; }
@@ -616,6 +641,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         case "cg:delete-clip":
           sendResponse(await deleteClipNow(msg.id));
+          break;
+        case "cg:open-analysis":
+          sendResponse(await openAnalysis(msg.token));
           break;
         default:
           sendResponse({ ok: false, reason: "Unknown request." });

@@ -122,8 +122,10 @@
     li.className = "clip";
     li.dataset.id = c.id;
     const st = clipStatus(c);
-    /* Already analyzed, or too long to analyze at all: open the dashboard instead of re-sending. */
-    const openInstead = !!(c.result || c.skipWhy === "too-long");
+    /* Already analyzed: "View analysis" opens that call's analysis in CallGuard. Too long to analyze at
+       all: open the dashboard. Otherwise "Analyze" sends it and shows the result in CallGuard. */
+    const viewable = !!(c.result && c.result.token);
+    const openInstead = !viewable && !!(c.result || c.skipWhy === "too-long");
     const clarity = c.clarity
       ? `<div class="sub">Clarity ${c.clarity.score}/100 · ${esc(c.clarity.verdict)}${c.clarity.reasons.length ? ` (${esc(c.clarity.reasons.join(", "))})` : ""}</div>`
       : "";
@@ -142,7 +144,9 @@
       ${clarity}
       <audio controls preload="metadata"></audio>
       <div class="actions">
-        ${c.queuedAt ? "" : `<button class="btn sm" data-act="${openInstead ? "open" : "send"}" title="${openInstead ? "Open CallGuard" : "Analyze this recording in CallGuard"}">${openInstead ? "Open CallGuard" : "Analyze"}</button>`}
+        ${c.queuedAt ? "" : viewable
+          ? `<button class="btn sm" data-act="view" title="Open this call's analysis in CallGuard">View analysis</button>`
+          : `<button class="btn sm" data-act="${openInstead ? "open" : "send"}" title="${openInstead ? "Open CallGuard" : "Analyze this recording and show the result in CallGuard"}">${openInstead ? "Open CallGuard" : "Analyze"}</button>`}
         <button class="btn sm" data-act="download">Download</button>
         <button class="btn sm ghost" data-act="delete">Delete</button>
       </div>`;
@@ -203,6 +207,13 @@
       const act = btn.dataset.act;
       if (act === "open") {
         chrome.tabs.create({ url: settings.dashboardUrl || DASH });
+        return;
+      }
+      if (act === "view") {
+        const clip = clips.find((c) => c.id === id);
+        const r = await send({ type: "cg:open-analysis", token: clip && clip.result && clip.result.token });
+        if (!r || !r.ok) toast((r && r.reason) || "Couldn't open the analysis.");
+        else window.close();
         return;
       }
       if (act === "send") {

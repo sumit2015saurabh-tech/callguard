@@ -155,3 +155,25 @@ test("after the worker forgot the capture, status and Stop still reach the recor
   assert.equal(stop.ok, true);
   assert.equal(stop.clips, 1, "the recorder was actually told to stop");
 });
+
+test("live parts are skipped once the whole recording of the same (ended) call is queued", async () => {
+  const w = makeWorld();
+  await w.add("part1", { kind: "chunk", sessionId: "call-9" });                 // fresh, not stale
+  await w.add("whole", { kind: "call", sessionId: "call-9", duration: 49 });
+  await w.send({ type: "cg:clip-added", clip: { id: "part1", kind: "chunk", duration: 20 } });
+  await w.send({ type: "cg:clip-added", clip: { id: "whole", kind: "call", duration: 49 } });
+  await w.idle();
+  assert.deepEqual(w.sent, ["whole"], "only the whole recording is analysed -> one history entry");
+});
+
+test("the dashboard receives the call's sessionId and kind with every recording", async () => {
+  const w = makeWorld();
+  let payload = null;
+  const orig = w.ctx.chrome.tabs.sendMessage;
+  w.ctx.chrome.tabs.sendMessage = async (t, msg) => { if (msg.type === "cg:dashboard-import") payload = msg.clip; return orig(t, msg); };
+  await w.add("whole", { kind: "call", sessionId: "wa-abc", duration: 30 });
+  await w.send({ type: "cg:clip-added", clip: { id: "whole", kind: "call", duration: 30 } });
+  await w.idle();
+  assert.equal(payload.sessionId, "wa-abc");
+  assert.equal(payload.kind, "call");
+});

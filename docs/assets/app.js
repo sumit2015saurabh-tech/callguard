@@ -561,6 +561,34 @@ function buildRecord({ token, createdAt, fileName, audioType, tr, cls, source, c
   return rec;
 }
 
+/* ---------- one call = one history entry ----------
+   The extension sends 20 s live parts during a call (for in-call warnings) and the whole-call recording
+   at the end, all with the call's sessionId. They update ONE record: the first creates it, later parts
+   keep the most serious verdict and add to the transcript, and the whole-call recording (the complete
+   context) becomes the final analysis. Alerts are planned once. */
+const ANALYSIS_FIELDS = ["category", "categoryName", "isFraud", "isBanking", "risk", "decision", "riskScore",
+  "confidence", "scores", "summary", "labels", "classifiedBy", "reportTicket", "language"];
+const decisionRank = (r) => ({ fraud: 2, uncertain: 1 }[r && r.decision] || (r && r.isFraud ? 2 : 0));
+function mergeSessionRecord(prev, next, kind) {
+  const whole = kind === "call";
+  const merged = { ...prev, parts: (prev.parts || 1) + (whole ? 0 : 1) };
+  for (const k of ["callerNumber", "callerName", "callerHandle", "callerId"]) if (!merged[k] && next[k]) merged[k] = next[k];
+  if (prev.wholeCall && !whole) return merged;                   // a late part never overrides the full call
+  const worse = decisionRank(next) > decisionRank(prev)
+    || (decisionRank(next) === decisionRank(prev) && (next.riskScore ?? -1) > (prev.riskScore ?? -1));
+  if (whole || worse) for (const k of ANALYSIS_FIELDS) merged[k] = next[k];
+  if (whole) {
+    merged.wholeCall = true;
+    merged.transcript = next.transcript; merged.duration = next.duration; merged.tokens = next.tokens;
+    merged.fileName = next.fileName; merged.audioType = next.audioType;
+  } else {
+    merged.transcript = [prev.transcript, next.transcript].filter(Boolean).join("\n");
+    merged.duration = (Number(prev.duration) || 0) + (Number(next.duration) || 0) || prev.duration;
+    merged.tokens = (Number(prev.tokens) || 0) + (Number(next.tokens) || 0) || prev.tokens;
+  }
+  return merged;
+}
+
 async function saveRecord(rec, audioBlob) {
   if (audioBlob) { await idb.putAudio(rec.id, audioBlob); rec.hasAudio = true; }
   await idb.put(rec);
@@ -677,6 +705,16 @@ const TITLES = { overview: "Overview", analyze: "Analyze a call", history: "Call
 const VIEWS = {};
 
 function route() {
+  /* #/call/<token>: open that call's full analysis (the extension's "View analysis" button). */
+  const deep = location.hash.match(/^#\/call\/([\w-]{4,40})$/);
+  if (deep) {
+    const id = deep[1];
+    history.replaceState(null, "", "#/history");
+    route();
+    if (S.calls.some((c) => c.id === id)) openDrawer(id);
+    else toast("That call isn't in this browser's history.", "alert");
+    return;
+  }
   const name = (location.hash.match(/^#\/(\w+)/) || [])[1] || "overview";
   const v = VIEWS[name] ? name : "overview";
   $$("#nav a").forEach((a) => a.classList.toggle("active", a.dataset.route === v));
@@ -1047,9 +1085,18 @@ async function runPipeline(blob, fileName, opts = {}) {
     const cls = { category: tr.category, confidence: tr.confidence, scores: tr.scores, by: "microservice" };
     set("classify", "done", `${cls.category} · ${CATS[cls.category].name}${tr.riskScore != null ? ` (risk score ${tr.riskScore}/100)` : cls.confidence != null ? ` (${pct(cls.confidence)})` : ""}`);
     cur = "label"; set("label", "active");
-    const rec = buildRecord({ token, createdAt, fileName, audioType: blob.type, tr, cls, source: opts.source || "microservice", channel: opts.channel, caller: opts.caller });
-    rec.notifications = planAlerts(rec);
-    await saveRecord(rec, blob);
+    let rec = buildRecord({ token, createdAt, fileName, audioType: blob.type, tr, cls, source: opts.source || "microservice", channel: opts.channel, caller: opts.caller });
+    const prev = opts.sessionId ? S.calls.find((c) => c.sessionId === opts.sessionId) : null;
+    if (opts.sessionId) { rec.sessionId = opts.sessionId; rec.wholeCall = opts.kind === "call"; rec.parts = opts.kind === "chunk" ? 1 : 0; }
+    if (prev) {
+      /* Another part (or the whole recording) of a call already in history: update that entry. */
+      rec = mergeSessionRecord(prev, rec, opts.kind);
+      if (rec.isFraud && !(rec.notifications || []).length) rec.notifications = planAlerts(rec);
+      await saveRecord(rec, opts.kind === "call" || !prev.hasAudio ? blob : null);
+    } else {
+      rec.notifications = planAlerts(rec);
+      await saveRecord(rec, blob);
+    }
     await sharedCallerStep(rec);                      // repeat-caller lookup + auto-report a fraud call
     await saveRecord(rec, null);
     set("label", "done", `${rec.labels.length} labels · saved${S.dir ? " + history folder" : ""}${rec.priorFlag && rec.priorFlag.flagged ? ` · repeat fraud caller (${rec.priorFlag.reports}× before)` : ""}`);
@@ -1929,7 +1976,9 @@ async function importExtensionClip(clip) {
   if (secs != null && secs > maxSecs + 0.5) return { ok: false, reason: `That clip is ${fmtDur(secs)} long; the microservice accepts up to ${fmtDur(maxSecs)}.` };
   if (!location.hash.startsWith("#/analyze")) location.hash = "#/analyze";
   await sleep(30);                                  // let the Analyze page render its pipeline
-  const rec = await runPipeline(blob, name, { source: `${channel}-extension`, channel, caller: clip.caller || {}, createdAt: when });
+  const sessionId = /^[\w.-]{1,80}$/.test(String(clip.sessionId || "")) ? String(clip.sessionId) : "";
+  const kind = ["chunk", "call", "voice"].includes(clip.kind) ? clip.kind : "";
+  const rec = await runPipeline(blob, name, { source: `${channel}-extension`, channel, caller: clip.caller || {}, createdAt: when, sessionId, kind });
   if (!rec) {
     const err = S.run && S.run.error;
     return { ok: false, reason: err ? `${err.title} ${err.detail}`.trim() : "The analysis didn't finish." };
