@@ -132,7 +132,7 @@ Current version: **1.0.0**. No build step, no dependencies — the folder (or th
 
 ```bash
 node --test extension/test/*.test.js                                   # unit tests
-mkdir -p dist && (cd extension && zip -r ../dist/callguard-extension-1.0.0.zip . -x 'test/*')
+mkdir -p dist && (cd extension && zip -r ../dist/callguard-extension-1.0.0.zip . -x 'test/*' -x 'STORE.md')
 ```
 
 Before uploading:
@@ -144,6 +144,9 @@ Before uploading:
    dashboard's history with a token and alerts.
 4. Publish the dashboard with `./deploy.sh` whenever `docs/assets/app.js` changes, so the bridge
    that accepts clips is live before the extension is handed out.
+5. Paste the listing text, permission justifications and data-usage answers from
+   [`STORE.md`](STORE.md) into the Chrome Web Store item, add screenshots, and give it a public URL
+   for [`PRIVACY.md`](PRIVACY.md).
 
 ## Tests and checks
 
@@ -152,6 +155,15 @@ settings validation, URL handling and clarity scoring:
 
 ```bash
 node --test extension/test/*.test.js        # Node 18+
+```
+
+Or run every check at once, from the repository root:
+
+```bash
+./extension_check.sh              # syntax, manifest, wiring, tests, hygiene, dashboard bridge,
+                                 # plus Chrome's own pack validation and a headless boot
+./extension_check.sh --fast       # skip the Chrome checks
+./extension_check.sh --package    # also build dist/callguard-extension-<version>.zip
 ```
 
 The popup also has **Settings → Run reliability checks**, which verifies at runtime: tab-capture and
