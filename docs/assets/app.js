@@ -849,13 +849,13 @@ const stepItems = (state = {}) => STEPS.map(([k, t, sub], i) => {
     <div><div class="s-title">${t}</div><div class="s-sub">${esc(s.note || sub)}</div></div></li>`;
 }).join("");
 
-async function runPipeline(blob, fileName) {
+async function runPipeline(blob, fileName, opts = {}) {
   if (S.run && S.run.running) { toast("An analysis is already running.", "alert"); return; }
   const state = {};
   S.run = { state, running: true, blob, fileName };
   const set = (k, st, note) => { state[k] = { st, note }; const el = $("#steps"); if (el) el.innerHTML = stepItems(state); };
   renderRun();
-  const createdAt = new Date().toISOString();
+  const createdAt = opts.createdAt || new Date().toISOString();
   const token = makeToken(new Date(createdAt));
   let cur = "upload";
   try {
@@ -875,7 +875,7 @@ async function runPipeline(blob, fileName) {
     const cls = { category: tr.category, confidence: tr.confidence, scores: tr.scores, by: "microservice" };
     set("classify", "done", `${cls.category} · ${CATS[cls.category].name}${cls.confidence != null ? ` (${pct(cls.confidence)})` : ""}`);
     cur = "label"; set("label", "active");
-    const rec = buildRecord({ token, createdAt, fileName, audioType: blob.type, tr, cls, source: "microservice" });
+    const rec = buildRecord({ token, createdAt, fileName, audioType: blob.type, tr, cls, source: opts.source || "microservice" });
     rec.notifications = planAlerts(rec);
     await saveRecord(rec, blob);
     set("label", "done", `${rec.labels.length} labels · saved${S.dir ? " + history folder" : ""}`);
@@ -888,10 +888,12 @@ async function runPipeline(blob, fileName) {
     S.pending = null; idb.kvSet("pending", null).catch(() => {});
     if ($("#filePill")) $("#filePill").innerHTML = "";
     toast(rec.isFraud ? `Fraud detected: ${rec.categoryName}` : "Call looks safe", rec.isFraud ? "alert" : "shield");
+    return rec;
   } catch (e) {
     const title = e.title || "Analysis stopped.", detail = e.detail ?? e.message;
     set(cur, "error", title);
     S.run.error = { title, detail, canRetry: !!blob && cur !== "upload" };
+    return null;
   } finally { S.run.running = false; renderRun(); }
 }
 
@@ -1690,6 +1692,49 @@ function authScreen(mode = "login", note = "") {
     } catch (ex) { err(ex.message); btn.disabled = false; btn.textContent = label; }
   };
 }
+
+/* ============================== Chrome extension bridge ============================== */
+/** A voice clip captured by the CallGuard Chrome extension arrives here as base64 audio.
+ *  It goes through the same pipeline as an upload: microservice, fraud category, history
+ *  and alert routing. The result is posted back to the extension's content script. */
+async function importExtensionClip(clip) {
+  if (!clip || typeof clip.audio !== "string") return { ok: false, reason: "That clip had no audio." };
+  if (!S.user) return { ok: false, reason: "Log in to CallGuard in this browser, then send the clip again." };
+  if (!S.settings.transcriberUrl) return { ok: false, reason: "Connect the microservice in Settings first." };
+  if (S.run && S.run.running) return { ok: false, busy: true, reason: "CallGuard is busy with another call." };
+  const b64 = String(clip.audio).replace(/^data:[^,]+,/, "");
+  if (!b64 || b64.length > 12 * 1024 * 1024) return { ok: false, reason: "That clip is too large for the dashboard." };
+  let blob;
+  try {
+    const bin = atob(b64), bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    blob = new Blob([bytes], { type: clip.mime || "audio/webm" });
+  } catch { return { ok: false, reason: "The clip's audio couldn't be read." }; }
+  if (!blob.size) return { ok: false, reason: "The clip was empty." };
+  const when = clip.capturedAt && !isNaN(Date.parse(clip.capturedAt)) ? new Date(clip.capturedAt).toISOString() : new Date().toISOString();
+  const name = clip.fileName || `telegram-call-${localTime(when).replace(":", "")}.webm`;
+  const maxSecs = CFG.maxAudioSeconds || 120;
+  const secs = clip.duration != null && !isNaN(Number(clip.duration)) ? Number(clip.duration) : await audioDuration(blob);
+  if (secs != null && secs > maxSecs + 0.5) return { ok: false, reason: `That clip is ${fmtDur(secs)} long; the microservice accepts up to ${fmtDur(maxSecs)}.` };
+  if (!location.hash.startsWith("#/analyze")) location.hash = "#/analyze";
+  await sleep(30);                                  // let the Analyze page render its pipeline
+  const rec = await runPipeline(blob, name, { source: "telegram-extension", createdAt: when });
+  if (!rec) {
+    const err = S.run && S.run.error;
+    return { ok: false, reason: err ? `${err.title} ${err.detail}`.trim() : "The analysis didn't finish." };
+  }
+  return { ok: true, token: rec.token, category: rec.category, categoryName: rec.categoryName, isFraud: rec.isFraud, risk: rec.risk, alerts: alertCount(rec) };
+}
+
+window.addEventListener("message", (e) => {
+  if (e.source !== window || e.origin !== location.origin) return;
+  const d = e.data;
+  if (!d || d.source !== "callguard-extension" || d.type !== "import-call") return;
+  Promise.resolve()
+    .then(() => importExtensionClip(d.clip))
+    .catch((err) => ({ ok: false, reason: String((err && err.message) || err) }))
+    .then((result) => window.postMessage({ source: "callguard-dashboard", requestId: d.requestId, result }, location.origin));
+});
 
 /* ============================== boot ============================== */
 async function startApp(user, fresh = false) {
