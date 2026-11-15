@@ -16,6 +16,8 @@
   const kb = (n) => (Number(n) > 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round((Number(n) || 0) / 1024))} KB`);
   const clock = (iso) => new Date(iso).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
   const isCallTab = (tab) => !!tab && core.isCallUrl(tab.url);
+  /* CallGuard has not received this recording yet: never analyzed and not already in the queue. */
+  const isUnsent = (c) => !c.result && !c.queuedAt;
 
   let live = { active: false };
   let settings = { dashboardUrl: DASH };
@@ -82,6 +84,7 @@
       clips = (await store.clips()).filter((c) => c.kind !== "chunk")
         .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
     } catch { clips = []; }
+    paintUnsent(clips.filter(isUnsent).length);
     const sig = clips.map((c) => `${c.id}:${c.result ? c.result.token || "r" : ""}:${c.queuedAt || ""}:${c.error || ""}:${c.autoSkipped || ""}`).join("|");
     if (sig === signature) return;
     signature = sig;
@@ -89,6 +92,18 @@
     list.innerHTML = "";
     $("#empty").hidden = clips.length > 0;
     for (const c of clips) list.appendChild(await clipRow(c));
+  }
+
+  /* "Send unsent" is a retry for recordings that never reached CallGuard: hidden when there are
+     none, so the label only ever appears next to a real count. */
+  function paintUnsent(n) {
+    const btn = $("#sendAll");
+    const note = $("#unsentNote");
+    btn.hidden = n === 0;
+    btn.textContent = n ? `Send ${n} unsent` : "Send unsent";
+    btn.title = "Hands every recording CallGuard hasn't received yet to CallGuard. Recordings it has already analyzed are not sent again.";
+    note.hidden = n === 0;
+    note.textContent = n ? `${n} recording${n === 1 ? " hasn't" : "s haven't"} reached CallGuard yet.` : "";
   }
 
   async function clipRow(c) {

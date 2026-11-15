@@ -331,8 +331,10 @@ async function recoverQueue() {
 }
 
 async function sendAll() {
+  /* Recordings only: a 20-second analysis part is transport, never listed, and a part that failed
+     is dropped when the call ends — the whole-call file still has its audio. */
   const clips = (await store.clips())
-    .filter((c) => !c.result && !c.queuedAt)
+    .filter((c) => c.kind !== "chunk" && !c.result && !c.queuedAt)
     .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
   for (const c of clips) await enqueue(c.id);
   return { ok: true, queued: clips.length };
