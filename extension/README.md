@@ -7,15 +7,15 @@ recording also carries the **source of the call** (Telegram or WhatsApp) and the
 from the call screen.
 
 The extension has no build step, no runtime dependencies and makes no network requests of its
-own. Privacy: [`PRIVACY.md`](PRIVACY.md). Current release: **1.4.0** (Manifest V3).
+own. Privacy: [`PRIVACY.md`](PRIVACY.md). Current release: **1.4.1** (Manifest V3).
 
-### What's new in 1.4.0
-- **Analyze after the call**: when a capture stops, the recording waits as "Ready to analyze". Press
-  **Analyze this call** (in the call dock or the popup): CallGuard's Analyze page opens and you watch the
-  analysis. Then the dock shows the verdict and **View analysis** opens that call's full details.
-  Live 20 s parts are still checked during the call for in-call warnings.
+### What's new in 1.4.1
+- **Analysed automatically when the call stops**: the whole-call recording is sent at once (ahead of any
+  live parts). The call dock and the popup immediately show **View analysis (live)**, which opens
+  CallGuard's Analyze page to watch it; when it is done the dock shows the verdict (Fraud / Not fraud,
+  category) and **View analysis** opens that call's full details. A failed analysis offers **Analyze again**.
 - One call = one history entry (live parts and the whole recording are merged in CallGuard).
-- Fixed: the popup never got the call's token/verdict back ("Saved to CallGuard" only).
+- Fixed: the popup never got the call's token and verdict back (it only said Saved to CallGuard).
 
 ### What's new in 1.3.0
 - **Microphone asked for automatically**: the one-time "Allow microphone" page opens by itself after

@@ -400,17 +400,20 @@
        analysis can be watched; afterwards the verdict + "View analysis" (that call's full details). */
     $("#afterBtn").onclick = async () => {
       if (!lastCall) return;
-      if (lastCall.result && lastCall.result.token) {
-        const r = await send({ type: "cg:open-analysis", token: lastCall.result.token });
-        if (!(r && r.ok)) { hint = (r && r.reason) || "Couldn't open the analysis."; paint(); }
+      if (lastCall.error && !(lastCall.result && lastCall.result.token)) {   // failed: try again, and watch it
+        analyzing = true; hint = ""; paint();
+        const r = await send({ type: "cg:send", clipId: lastCall.id, focus: true });
+        analyzing = false;
+        if (!(r && r.ok)) hint = (r && r.reason) || "Couldn't analyze the call.";
+        lastCallAt = 0; await refreshLastCall(); paint();
         return;
       }
-      analyzing = true; hint = ""; paint();
-      const r = await send({ type: "cg:send", clipId: lastCall.id, focus: true });
-      analyzing = false;
-      if (!(r && r.ok)) hint = (r && r.reason) || "Couldn't analyze the call.";
-      lastCallAt = 0; await refreshLastCall(); paint();
+      /* Done: that call's full analysis. Still running: CallGuard's Analyze page, to watch it live. */
+      const token = lastCall.result && lastCall.result.token;
+      const r = await send({ type: "cg:open-analysis", token: token || "" });
+      if (!(r && r.ok)) { hint = (r && r.reason) || "Couldn't open CallGuard."; paint(); }
     };
+    let callStartedAt = 0;      // so the dock never shows an older call's result after a new capture
     let checkedKey = "";
     let quietCalls = 0;
 
@@ -500,11 +503,16 @@
     async function poll() {
       const res = await send({ type: "cg:status" });
       const wasLive = !!live.active;
+      const prevStart = live.startedAt;
       if (res && res.ok) {
         live = res.live || { active: false };
         settings = res.settings || settings;
       }
-      if (wasLive && !live.active) { lastCallAt = 0; $("#panel").hidden = false; }   // call just stopped: show Analyze
+      if (live.active && live.startedAt) callStartedAt = Date.parse(live.startedAt) || callStartedAt;
+      if (wasLive && !live.active) {                     // call just stopped: it is being sent -> show "View analysis"
+        if (prevStart) callStartedAt = Date.parse(prevStart) || callStartedAt;
+        lastCallAt = 0; $("#panel").hidden = false;
+      }
       if (!live.active) await refreshLastCall();
       callActive = detectCall();
       if (callActive && Date.now() - callerAt > 3000) {
@@ -563,22 +571,29 @@
         : "Caller ID not found yet: open this person's chat or profile so CallGuard can read it.";
       /* After the call: Analyze / Analyzing… / verdict + View analysis */
       const lc = !on ? lastCall : null;
-      const showAfter = !!(lc && (lc.skipWhy === "ready" || lc.sending || analyzing || (lc.result && lc.result.token) || lc.error));
+      const fresh = lc && Date.parse(lc.createdAt || 0) >= callStartedAt - 5000;
+      const showAfter = !!(fresh && lc.skipWhy !== "too-short");
       $("#after").hidden = !showAfter;
       if (showAfter) {
         const r = lc.result;
         const dur = fmtDur(Number(lc.duration) || 0);
-        if (r && r.token) {
+        $("#afterBtn").disabled = false;
+        if (r && r.token) {                                   // finished: verdict + full analysis
           $("#after").dataset.kind = r.isFraud ? "fraud" : "safe";
           $("#afterText").textContent = `${r.isFraud ? "⚠ Fraud" : "✓ Not fraud"}${r.category ? ` · ${r.category}${r.categoryName ? ` ${r.categoryName}` : ""}` : ""} (call ${dur})`;
           $("#afterBtn").textContent = "View analysis";
-          $("#afterBtn").disabled = false;
-        } else {
+        } else if (lc.error && !analyzing) {                  // failed: say why, offer a retry
           $("#after").dataset.kind = "";
-          const busyNow = analyzing || lc.sending;
-          $("#afterText").textContent = busyNow ? `Analyzing your ${dur} call in CallGuard…` : lc.error ? `Not analyzed: ${lc.error}` : `Call recorded (${dur}). Analyze it to see if it was a scam.`;
-          $("#afterBtn").textContent = busyNow ? "Analyzing…" : "Analyze this call";
-          $("#afterBtn").disabled = busyNow;
+          $("#afterText").textContent = `Not analyzed: ${lc.error}`;
+          $("#afterBtn").textContent = "Analyze again";
+        } else if (lc.skipWhy === "too-long") {               // over 2 min: analysed in parts during the call
+          $("#after").dataset.kind = "";
+          $("#afterText").textContent = `Call ${dur}: longer than 2 minutes, so it was analysed in parts during the call.`;
+          $("#afterBtn").textContent = "View analysis";
+        } else {                                              // sent automatically, analysis running
+          $("#after").dataset.kind = "";
+          $("#afterText").textContent = `Analyzing your ${dur} call in CallGuard…`;
+          $("#afterBtn").textContent = "View analysis (live)";
         }
       }
       $("#flagged").hidden = !flagged;

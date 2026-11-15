@@ -144,9 +144,9 @@
       ${clarity}
       <audio controls preload="metadata"></audio>
       <div class="actions">
-        ${c.queuedAt ? "" : viewable
+        ${c.queuedAt ? `<button class="btn sm primary" data-act="live" title="Watch the analysis on CallGuard's Analyze page">View analysis (live)</button>` : viewable
           ? `<button class="btn sm" data-act="view" title="Open this call's analysis in CallGuard">View analysis</button>`
-          : `<button class="btn sm${c.skipWhy === "ready" ? " primary" : ""}" data-act="${openInstead ? "open" : "send"}" title="${openInstead ? "Open CallGuard" : "Analyze this recording and show the result in CallGuard"}">${openInstead ? "Open CallGuard" : "Analyze"}</button>`}
+          : `<button class="btn sm" data-act="${openInstead ? "open" : "send"}" title="${openInstead ? "Open CallGuard" : "Analyze this recording and show the result in CallGuard"}">${openInstead ? "Open CallGuard" : "Analyze"}</button>`}
         <button class="btn sm" data-act="download">Download</button>
         <button class="btn sm ghost" data-act="delete">Delete</button>
       </div>`;
@@ -162,10 +162,9 @@
         ? { cls: "bad", text: c.result.category || "Fraud" }
         : { cls: "good", text: c.result.category || "Saved" };
     }
-    if (c.queuedAt) return { cls: "warn", text: "Sending…" };
+    if (c.queuedAt) return { cls: "warn", text: "Analyzing…" };
     if (c.skipWhy === "too-long") return { cls: "warn", text: "Too long · in parts" };
     if (c.skipWhy === "too-short") return { cls: "", text: "Too short · not sent" };
-    if (c.skipWhy === "ready") return { cls: "warn", text: "Ready to analyze" };
     if (c.autoSkipped) return { cls: "warn", text: "Unclear · not sent" };
     if (c.error) return { cls: "bad", text: "Not sent" };
     return { cls: "", text: "Local only" };
@@ -208,6 +207,12 @@
       const act = btn.dataset.act;
       if (act === "open") {
         chrome.tabs.create({ url: settings.dashboardUrl || DASH });
+        return;
+      }
+      if (act === "live") {
+        const r = await send({ type: "cg:open-analysis", token: "" });
+        if (!r || !r.ok) toast((r && r.reason) || "Couldn't open CallGuard.");
+        else window.close();
         return;
       }
       if (act === "view") {

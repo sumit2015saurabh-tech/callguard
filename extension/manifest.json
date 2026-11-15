@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "CallGuard — Telegram & WhatsApp call capture",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "Capture live Telegram and WhatsApp Web calls and send the recording to CallGuard for scam analysis.",
   "homepage_url": "https://sumit2015saurabh-tech.github.io/callguard/",
   "minimum_chrome_version": "116",

@@ -279,9 +279,8 @@
     if (clip && Number(clip.duration) > MAX_ANALYZE_SEC) return { send: false, drop: false, skipWhy: "too-long" };
     if (clip && clip.duration != null && Number(clip.duration) < MIN_ANALYZE_SEC) return { send: false, drop: false, skipWhy: "too-short" };
     if (poor && !(settings && settings.skipUnclear === false)) return { send: false, drop: false, skipWhy: "unclear" };
-    /* The whole-call recording waits for the user's "Analyze" (popup or dock), which opens CallGuard's
-       Analyze page so the analysis can be watched. Live parts above are still sent during the call. */
-    if (clip && clip.kind === "call") return { send: false, drop: false, skipWhy: "ready" };
+    /* The whole-call recording is sent as soon as the capture stops (ahead of any live parts); the dock
+       and popup offer "View analysis" at once, which opens CallGuard's Analyze page to watch it live. */
     return { send: true, drop: false, skipWhy: "" };
   }
 

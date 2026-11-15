@@ -162,9 +162,7 @@ test("live parts are skipped once the whole recording of the same (ended) call i
   await w.add("part1", { kind: "chunk", sessionId: "call-9" });                 // fresh, not stale
   await w.add("whole", { kind: "call", sessionId: "call-9", duration: 49 });
   await w.send({ type: "cg:clip-added", clip: { id: "part1", kind: "chunk", duration: 20 } });
-  await w.send({ type: "cg:clip-added", clip: { id: "whole", kind: "call", duration: 49 } });   // waits as "ready"
-  await w.idle();
-  w.send({ type: "cg:send", clipId: "whole" });                                                  // the user presses Analyze
+  await w.send({ type: "cg:clip-added", clip: { id: "whole", kind: "call", duration: 49 } });
   await w.idle();
   assert.deepEqual(w.sent, ["whole"], "only the whole recording is analysed -> one history entry");
 });
@@ -175,21 +173,27 @@ test("the dashboard receives the call's sessionId and kind with every recording"
   const orig = w.ctx.chrome.tabs.sendMessage;
   w.ctx.chrome.tabs.sendMessage = async (t, msg) => { if (msg.type === "cg:dashboard-import") payload = msg.clip; return orig(t, msg); };
   await w.add("whole", { kind: "call", sessionId: "wa-abc", duration: 30 });
-  await w.send({ type: "cg:send", clipId: "whole" });                       // the user presses Analyze
+  await w.send({ type: "cg:clip-added", clip: { id: "whole", kind: "call", duration: 30 } });
   await w.idle();
   assert.equal(payload.sessionId, "wa-abc");
   assert.equal(payload.kind, "call");
 });
 
-test("a whole-call recording waits as \"ready\" and goes only when the user presses Analyze", async () => {
+test("a whole-call recording is sent automatically when the capture stops, and the token comes back", async () => {
   const w = makeWorld();
   await w.add("whole", { kind: "call", sessionId: "s7", duration: 40 });
   await w.send({ type: "cg:clip-added", clip: { id: "whole", kind: "call", duration: 40, clarity: null } });
   await w.idle();
-  assert.deepEqual(w.sent, [], "not sent automatically");
-  assert.equal(w.clips.get("whole").skipWhy, "ready");
-  const r = await w.send({ type: "cg:send", clipId: "whole", focus: true });
-  assert.equal(r.ok, true);
-  assert.deepEqual(w.sent, ["whole"]);
-  assert.equal(w.clips.get("whole").result.token, "T-whole", "the token comes back, so View analysis works");
+  assert.deepEqual(w.sent, ["whole"], "sent without any click");
+  assert.equal(w.clips.get("whole").result.token, "T-whole", "token kept, so View analysis can open this call");
+});
+
+test("View analysis while the call is still being analysed opens the live Analyze page", async () => {
+  const w = makeWorld();
+  let opened = "";
+  w.ctx.chrome.tabs.update = async (_id, props) => { if (props.url) opened = props.url; return {}; };
+  assert.equal((await w.send({ type: "cg:open-analysis", token: "" })).ok, true);
+  assert.ok(opened.endsWith("#/analyze"), opened);
+  assert.equal((await w.send({ type: "cg:open-analysis", token: "CG-20261115-ABC123" })).ok, true);
+  assert.ok(opened.endsWith("#/call/CG-20261115-ABC123"), opened);
 });

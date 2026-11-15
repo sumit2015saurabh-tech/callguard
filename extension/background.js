@@ -422,13 +422,14 @@ async function coveredByWholeCall(clip) {
   return all.some((c) => c.kind === "call" && c.sessionId === clip.sessionId && c.skipWhy !== "too-long" && c.skipWhy !== "too-short");
 }
 
-/** "View analysis": open (or reuse) the dashboard tab straight on that call's analysis. */
+/** "View analysis": open (or reuse) the dashboard tab. With a token: that call's full analysis.
+    Without one (still being analysed): the Analyze page, where the analysis runs live. */
 async function openAnalysis(token) {
-  if (!/^[\w-]{4,40}$/.test(String(token || ""))) return { ok: false, reason: "That recording has no CallGuard token yet." };
   const settings = await getSettings();
   const base = core.normaliseDashboardUrl(settings.dashboardUrl);
   const tab = await findOrOpenDashboard(base, true);
-  await chrome.tabs.update(tab.id, { url: `${base.split("#")[0]}#/call/${token}`, active: true });
+  const view = /^[\w-]{4,40}$/.test(String(token || "")) ? `#/call/${token}` : "#/analyze";
+  await chrome.tabs.update(tab.id, { url: `${base.split("#")[0]}${view}`, active: true });
   if (tab.windowId != null) await chrome.windows.update(tab.windowId, { focused: true }).catch(() => {});
   return { ok: true };
 }
