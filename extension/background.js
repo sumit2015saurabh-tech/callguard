@@ -11,8 +11,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let live = { active: false };     // last snapshot from the offscreen recorder
 let creating = null;              // in-flight offscreen document creation
-const queue = [];                 // clip ids waiting for the dashboard
+const urgent = [];                // recordings (whole call / clips) waiting for the dashboard: sent first
+const queue = [];                 // live 20-second analysis parts waiting for the dashboard
 let pumping = false;
+const STALE_PART_MS = 3 * 60 * 1000;   // a part of a call that has ended is dropped after this
 
 /* ---------- settings ---------- */
 async function getSettings() {
@@ -358,15 +360,32 @@ async function sendNow(id, opts = {}) {
 
 async function enqueue(id) {
   await store.patchClip(id, { queuedAt: new Date().toISOString(), autoSkipped: "", error: "" }).catch(() => {});
-  if (!queue.includes(id)) queue.push(id);
+  const clip = await store.clip(id).catch(() => null);
+  const list = clip && clip.kind === "chunk" ? queue : urgent;   // recordings jump ahead of live parts
+  if (!urgent.includes(id) && !queue.includes(id)) list.push(id);
   pump();
+}
+
+/** A live 20-second part only matters while its call is going on (it gives in-call warnings). Once the
+    call has ended (and the part is a few minutes old) the whole-call recording covers it, so it is dropped
+    instead of holding up newer recordings. */
+function isStalePart(clip) {
+  if (!clip || clip.kind !== "chunk") return false;
+  if (live.active && live.sessionId === clip.sessionId) return false;
+  return Date.now() - Date.parse(clip.createdAt || 0) > STALE_PART_MS;
 }
 
 async function pump() {
   if (pumping) return;
   pumping = true;
   try {
-    while (queue.length) await sendNow(queue.shift());
+    while (urgent.length || queue.length) {
+      const id = urgent.length ? urgent.shift() : queue.shift();
+      const clip = await store.clip(id).catch(() => null);
+      if (!clip) continue;                                            // deleted from the popup meanwhile
+      if (isStalePart(clip)) { await store.deleteClip(id).catch(() => {}); continue; }
+      await sendNow(id);
+    }
   } finally { pumping = false; }
 }
 
