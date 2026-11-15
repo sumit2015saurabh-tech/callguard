@@ -44,6 +44,9 @@
   /* The dashboard rejects any single file longer than 120 s, so a whole-call recording longer than
      that is never auto-sent: its 20 s parts were already analyzed during the call. */
   const MAX_ANALYZE_SEC = 120;
+  /* A recording shorter than this (a capture started and stopped by accident) has nothing to analyse:
+     it is kept in the popup but not auto-sent. It can still be sent or deleted by hand. */
+  const MIN_ANALYZE_SEC = 4;
 
   /* One VAD frame is 100 ms; a clip closes after 900 ms of quiet and is split at 40 s so it
      stays well inside the microservice's 120 s limit. */
@@ -274,6 +277,7 @@
       return { send: true, drop: false, skipWhy: "" };
     }
     if (clip && Number(clip.duration) > MAX_ANALYZE_SEC) return { send: false, drop: false, skipWhy: "too-long" };
+    if (clip && clip.duration != null && Number(clip.duration) < MIN_ANALYZE_SEC) return { send: false, drop: false, skipWhy: "too-short" };
     if (poor && !(settings && settings.skipUnclear === false)) return { send: false, drop: false, skipWhy: "unclear" };
     return { send: true, drop: false, skipWhy: "" };
   }
@@ -295,6 +299,7 @@
     THRESHOLDS,
     SEGMENT_DEFAULTS,
     CHUNK_SECONDS,
+    MIN_ANALYZE_SEC,
     LONG_CALL_WARN_SEC,
     PLATFORMS,
     normaliseDashboardUrl,

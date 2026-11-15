@@ -7,7 +7,24 @@ recording also carries the **source of the call** (Telegram or WhatsApp) and the
 from the call screen.
 
 The extension has no build step, no runtime dependencies and makes no network requests of its
-own. Privacy: [`PRIVACY.md`](PRIVACY.md). Current release: **1.1.0** (Manifest V3).
+own. Privacy: [`PRIVACY.md`](PRIVACY.md). Current release: **1.3.0** (Manifest V3).
+
+### What's new in 1.3.0
+- **Microphone asked for automatically**: the one-time "Allow microphone" page opens by itself after
+  install/update and when a capture starts without the mic; after Allow, your voice joins the running
+  capture. If the mic is blocked, the page has a button to CallGuard's own microphone setting.
+- **Faster sending**: recordings go ahead of live 20-second analysis parts, and parts of a call that has
+  ended are dropped instead of holding up newer recordings.
+- **Delete always works**, also while a recording is "Sending…".
+- **Accidental tiny recordings** (under 4 s) are kept local ("Too short · not sent") instead of sent.
+- **Repeat fraud callers**: when a call starts, the dock checks the caller against CallGuard's shared
+  fraud-caller list (through the open dashboard tab) and shows a red warning + Chrome notification.
+- **Caller ID**: WhatsApp's private ID is used when the number is hidden; the dock says when no caller
+  ID can be read (open the person's chat).
+- **Reliability**: Stop and status work even after Chrome restarted the extension's background worker;
+  a dashboard that never answers gives the recording back after 4 minutes with a clear reason.
+
+Tests: `node --test extension/test/core.test.js extension/test/background.test.js` (core helpers + the real background.js against a fake Chrome API).
 
 ## Install
 

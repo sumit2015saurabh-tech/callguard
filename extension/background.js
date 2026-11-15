@@ -111,6 +111,7 @@ async function askCaller(tabId, platform) {
 }
 
 async function startCapture(tabId) {
+  await syncLive();
   if (live.active) return { ok: false, reason: "A capture is already running. Stop it first." };
   if (tabId == null) {
     const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
@@ -188,7 +189,19 @@ async function openMicGrant(reason) {
   return true;
 }
 
+/** Chrome stops an idle service worker after ~30 s and its memory (`live`) is lost while the offscreen
+    recorder keeps recording. Re-read the recorder's state before acting on `live`. */
+async function syncLive() {
+  if (live.active) return live;
+  const has = chrome.offscreen.hasDocument ? await chrome.offscreen.hasDocument().catch(() => false) : false;
+  if (!has) return live;
+  const r = await chrome.runtime.sendMessage({ target: "offscreen", type: "cg:offscreen-status" }).catch(() => null);
+  if (r && r.ok && r.live && r.live.active) { live = { ...r.live }; paintBadge(); }
+  return live;
+}
+
 async function stopCapture(reason) {
+  await syncLive();
   if (!live.active) {
     live = { active: false };
     paintBadge();
@@ -428,7 +441,7 @@ async function sendAll() {
      is dropped when the call ends — the whole-call file still has its audio. Whole-call files
      longer than the dashboard's 120 s limit stay local (their parts were analyzed live). */
   const clips = (await store.clips())
-    .filter((c) => c.kind !== "chunk" && !c.result && !c.queuedAt && c.skipWhy !== "too-long")
+    .filter((c) => c.kind !== "chunk" && !c.result && !c.queuedAt && c.skipWhy !== "too-long" && c.skipWhy !== "too-short")
     .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
   for (const c of clips) await enqueue(c.id);
   return { ok: true, queued: clips.length };
@@ -580,6 +593,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse(await stopCapture(msg.reason || "stopped"));
           break;
         case "cg:status":
+          await syncLive();
           sendResponse({ ok: true, live, settings: await getSettings() });
           break;
         case "cg:send":

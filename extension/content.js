@@ -265,11 +265,13 @@
         clearTimeout(timer);
         window.removeEventListener("message", onMessage);
       }
-      /* Analysis can run for minutes on a long recording: give the dashboard ten minutes. */
+      /* A recording is at most 120 s; transcription + analysis takes well under a minute when the
+         services are up. After 4 minutes something is wrong (dashboard logged out, stuck or closed):
+         give the clip back with a clear reason instead of showing "Sending…" for 10 minutes. */
       timer = setTimeout(() => {
         cleanup();
-        resolve({ ok: false, reason: "CallGuard didn't answer in time. Open the dashboard, log in, then try again." });
-      }, 600000);
+        resolve({ ok: false, reason: "CallGuard didn't answer within 4 minutes. Check the dashboard tab is open and logged in, then press Analyze again." });
+      }, 240000);
       window.addEventListener("message", onMessage);
       window.postMessage({ source: "callguard-extension", type: "import-call", requestId, clip }, location.origin);
     });

@@ -22,7 +22,7 @@
   const isCallTab = (tab) => !!tab && core.isCallUrl(tab.url);
   /* CallGuard has not received this recording yet: never analyzed and not already in the queue.
      A whole-call file longer than the dashboard's 120 s limit is kept local, not "unsent". */
-  const isUnsent = (c) => !c.result && !c.queuedAt && c.skipWhy !== "too-long";
+  const isUnsent = (c) => !c.result && !c.queuedAt && c.skipWhy !== "too-long" && c.skipWhy !== "too-short";
 
   let live = { active: false };
   let settings = { dashboardUrl: DASH, duplex: true };
@@ -160,6 +160,7 @@
     }
     if (c.queuedAt) return { cls: "warn", text: "Sending…" };
     if (c.skipWhy === "too-long") return { cls: "warn", text: "Too long · in parts" };
+    if (c.skipWhy === "too-short") return { cls: "", text: "Too short · not sent" };
     if (c.autoSkipped) return { cls: "warn", text: "Unclear · not sent" };
     if (c.error) return { cls: "bad", text: "Not sent" };
     return { cls: "", text: "Local only" };

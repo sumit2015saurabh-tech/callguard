@@ -239,3 +239,13 @@ test("auto-send: unclear voice clips are skipped only while skipUnclear is on", 
   assert.deepEqual(autoSendDecision(clip, { skipUnclear: true }), { send: false, drop: false, skipWhy: "unclear" });
   assert.deepEqual(autoSendDecision(clip, { skipUnclear: false }), { send: true, drop: false, skipWhy: "" });
 });
+
+test("auto-send: a recording shorter than 4 s (accidental capture) is kept local, not sent", () => {
+  assert.deepEqual(autoSendDecision({ kind: "call", duration: 2, clarity: null }, {}),
+    { send: false, drop: false, skipWhy: "too-short" });
+  assert.equal(autoSendDecision({ kind: "call", duration: 4, clarity: null }, {}).send, true);
+  assert.equal(autoSendDecision({ kind: "voice", duration: 3.5, clarity: null }, {}).skipWhy, "too-short");
+  // parts are judged on silence, not length; an unknown duration is still sent
+  assert.equal(autoSendDecision({ kind: "chunk", duration: 2, clarity: null }, {}).send, true);
+  assert.equal(autoSendDecision({ kind: "call", clarity: null }, {}).send, true);
+});
