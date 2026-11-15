@@ -132,20 +132,26 @@
 
   /* Stable IDs the apps keep in the page. They work for unknown callers whose number isn't shown:
      WhatsApp chat IDs are "<number>@c.us"; Telegram avatars carry the peer's user ID. */
-  function whatsappNumber() {
-    const seen = {};
+  /* WhatsApp keeps the peer's ID in the open chat: "<number>@c.us" when the number is known, or a private
+     "<id>@lid" (newer WhatsApp hides numbers). The @lid ID is stable per person, so it still recognises a
+     repeat caller when no number is shown. Returns { number: "+…" | "", lid: "wa:lid:…" | "" }. */
+  function whatsappIds() {
+    const num = {}, lid = {};
+    const best = (o) => Object.keys(o).sort((a, b) => o[b] - o[a])[0];
     for (const sel of ['[data-testid="call-screen" i] [data-id]', '[class*="call" i] [data-id]', "#main [data-id]",
-                       '[data-testid="conversation-panel-wrapper"] [data-id]']) {
+                       '[data-testid="conversation-panel-wrapper"] [data-id]', "#main [data-jid]", '[class*="call" i] [data-jid]']) {
       let found;
       try { found = document.querySelectorAll(sel); } catch { continue; }
       for (const el of found) {
-        const m = String(el.getAttribute("data-id")).match(/(?:^|_)(\d{7,15})@c\.us(?:_|$)/);
-        if (m) seen[m[1]] = (seen[m[1]] || 0) + 1;
+        const id = String(el.getAttribute("data-id") || el.getAttribute("data-jid") || "");
+        let m = id.match(/(?:^|_)(\d{7,15})@c\.us(?:_|$)/);
+        if (m) num[m[1]] = (num[m[1]] || 0) + 1;
+        m = id.match(/(?:^|_)(\d{6,20})@lid(?:_|$)/);
+        if (m) lid[m[1]] = (lid[m[1]] || 0) + 1;
       }
-      const best = Object.keys(seen).sort((a, b) => seen[b] - seen[a])[0];
-      if (best) return `+${best}`;
+      if (best(num) || best(lid)) break;
     }
-    return "";
+    return { number: best(num) ? `+${best(num)}` : "", lid: best(lid) ? `wa:lid:${best(lid)}` : "" };
   }
 
   function telegramHandle() {
@@ -194,9 +200,10 @@
     }
     /* The call screen often shows only the saved contact's name, so look for the calling number
        separately and let it lead the caller ID. */
-    if (platform === "whatsapp") caller.number = whatsappNumber() || caller.number;   // exact chat number first
+    const wa = platform === "whatsapp" ? whatsappIds() : { number: "", lid: "" };
+    if (wa.number) caller.number = wa.number;                                          // exact chat number first
     if (!caller.number) caller.number = findNumber();
-    caller.handle = platform === "telegram" ? telegramHandle() : "";
+    caller.handle = platform === "telegram" ? telegramHandle() : wa.lid;              // ID when the number is hidden
     const id = caller.number || caller.handle;
     return {
       ...caller,
@@ -212,11 +219,36 @@
       sendResponse({ ok: true, platform, caller: onCallSite ? findCaller() : { name: "", number: "", handle: "", label: "" } });
       return;
     }
+    if (msg.type === "cg:dashboard-check") {          // is this caller on the shared fraud list?
+      if (!onDashboard) { sendResponse({ ok: false, reason: "This tab isn't the CallGuard dashboard." }); return; }
+      askDashboard("check-caller", { caller: msg.caller }, 15000).then(sendResponse);
+      return true;
+    }
     if (msg.type !== "cg:dashboard-import") return;
     if (!onDashboard) { sendResponse({ ok: false, reason: "This tab isn't the CallGuard dashboard." }); return; }
     importClip(msg.clip).then(sendResponse, (e) => sendResponse({ ok: false, reason: (e && e.message) || String(e) }));
     return true;
   });
+
+  /** One request/answer with the dashboard page (same window.postMessage protocol as importClip). */
+  function askDashboard(type, payload, timeoutMs) {
+    const requestId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    return new Promise((resolve) => {
+      const onMessage = (e) => {
+        if (e.source !== window || e.origin !== location.origin) return;
+        const d = e.data;
+        if (!d || d.source !== "callguard-dashboard" || d.requestId !== requestId) return;
+        clearTimeout(timer); window.removeEventListener("message", onMessage);
+        resolve(d.result || { ok: false, reason: "CallGuard sent no result." });
+      };
+      const timer = setTimeout(() => {
+        window.removeEventListener("message", onMessage);
+        resolve({ ok: false, reason: "CallGuard didn't answer. Open the dashboard and log in." });
+      }, timeoutMs);
+      window.addEventListener("message", onMessage);
+      window.postMessage({ source: "callguard-extension", type, requestId, ...payload }, location.origin);
+    });
+  }
 
   function importClip(clip) {
     const requestId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -292,6 +324,9 @@
                  padding: 8px; font-size: 11.5px; line-height: 1.45; }
         .alert[data-kind="warn"] { border-color: #edd9a8; background: #fffaf0; color: #6b5a33; }
         .alert[hidden] { display: none; }
+        .alert.flagged { border: 2px solid #c0392b; background: #fdecea; color: #7a1f17; font-size: 12px; }
+        .alert.flagged b { display: block; font-size: 12.5px; margin-bottom: 2px; }
+        .hint[hidden] { display: none; }
         .confirm { border: 1px solid #f0d9a8; background: #fffaf0; border-radius: 10px; padding: 9px; display: grid; gap: 8px; }
         .confirm p { margin: 0; font-size: 11.5px; color: #6b5a33; }
         .confirm .row { display: flex; gap: 6px; }
@@ -311,6 +346,8 @@
           <div class="head"><b id="title">Call</b><button class="x" id="close" aria-label="Close">✕</button></div>
           <div class="state" id="state">Checking…</div>
           <div class="caller" id="caller" hidden></div>
+          <div class="hint" id="callerHint" hidden></div>
+          <div class="alert flagged" id="flagged" data-kind="fraud" hidden></div>
           <div class="alert" id="alert" data-kind="fraud" hidden></div>
           <div class="meter"><span id="lvl"></span></div>
           <div class="meta"><span id="timer">0:00</span><span id="clips">0 clips</span></div>
@@ -337,6 +374,24 @@
     let consent = false;
     let caller = { name: "", number: "", label: "" };
     let callerAt = 0;
+    let flagged = null;         // shared fraud-caller list result for the current caller
+    let checkedKey = "";
+    let quietCalls = 0;
+
+    /* Ask CallGuard (via the dashboard tab) whether this caller was reported as fraud before. */
+    function checkCaller(found) {
+      const key = found.number || found.handle;
+      if (!key || key === checkedKey) return;
+      checkedKey = key;
+      send({ type: "cg:check-caller", caller: { name: found.name, number: found.number, handle: found.handle } })
+        .then((r) => {
+          if (checkedKey !== key) return;
+          flagged = r && r.ok && r.flagged ? r : null;
+          if (flagged) $("#panel").hidden = false;     // open the dock once so the warning is seen
+          if (!(r && r.ok)) hint = (r && r.reason) || "";
+          paint();
+        });
+    }
 
     chrome.storage.local.get("cgConsent")
       .then((v) => { consent = !!(v && v.cgConsent); paint(); })
@@ -420,6 +475,15 @@
           caller = found;
           send({ type: "cg:caller", caller: { name: found.name, number: found.number, handle: found.handle } });
         }
+        checkCaller(found);
+      }
+      /* A new call starts fresh: forget the previous caller after the call screen has been gone a while. */
+      if (!callActive && !live.active) {
+        if (++quietCalls > 4 && (caller.label || flagged)) {
+          caller = { name: "", number: "", label: "" }; flagged = null; checkedKey = "";
+        }
+      } else {
+        quietCalls = 0;
       }
       if (live.active && callActive) callSeen = true;
       if (live.active && callSeen && !callActive && settings && settings.autoStop !== false) {
@@ -454,6 +518,19 @@
       $("#caller").hidden = !caller.label;
       $("#caller").textContent = caller.label ? `Caller ID: ${caller.label}` : "";
       $("#caller").title = caller.number ? `Calling number ${caller.number}` : "";
+      $("#callerHint").hidden = !(callActive && !caller.number && !caller.handle);
+      $("#callerHint").textContent = platform === "whatsapp"
+        ? "Caller ID not found yet: open this person's chat in WhatsApp Web (the call screen alone often hides the number)."
+        : "Caller ID not found yet: open this person's chat or profile so CallGuard can read it.";
+      $("#flagged").hidden = !flagged;
+      if (flagged) {
+        const n = Number(flagged.reports || 0);
+        const cat = flagged.category && flagged.category !== "unknown" ? ` (${flagged.category})` : "";
+        $("#flagged").textContent = "";
+        const head = document.createElement("b");
+        head.textContent = "⚠ Reported as a FRAUD caller";
+        $("#flagged").append(head, `Flagged ${n} time${n === 1 ? "" : "s"} by CallGuard${cat}${flagged.max_risk_score != null ? `, risk up to ${flagged.max_risk_score}/100` : ""}. Don't share codes, PINs, passwords or payments. Hang up if unsure.`);
+      }
       const parts = Number(live.parts || 0);
       $("#clips").textContent = live.keepFullCall
         ? (parts ? `one recording · ${parts} part${parts === 1 ? "" : "s"}` : "one recording")

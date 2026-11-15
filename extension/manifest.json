@@ -1,11 +1,20 @@
 {
   "manifest_version": 3,
   "name": "CallGuard — Telegram & WhatsApp call capture",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Capture live Telegram and WhatsApp Web calls and send the recording to CallGuard for scam analysis.",
   "homepage_url": "https://sumit2015saurabh-tech.github.io/callguard/",
   "minimum_chrome_version": "116",
-  "permissions": ["tabCapture", "activeTab", "audioCapture", "offscreen", "storage", "unlimitedStorage", "scripting"],
+  "permissions": [
+    "tabCapture",
+    "activeTab",
+    "audioCapture",
+    "offscreen",
+    "storage",
+    "unlimitedStorage",
+    "scripting",
+    "notifications"
+  ],
   "host_permissions": [
     "https://web.telegram.org/*",
     "https://web.whatsapp.com/*",
@@ -13,8 +22,13 @@
     "http://localhost/*",
     "http://127.0.0.1/*"
   ],
-  "optional_host_permissions": ["https://*/*", "http://*/*"],
-  "background": { "service_worker": "background.js" },
+  "optional_host_permissions": [
+    "https://*/*",
+    "http://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
   "action": {
     "default_title": "CallGuard",
     "default_popup": "popup.html",
@@ -40,7 +54,9 @@
         "http://localhost/*",
         "http://127.0.0.1/*"
       ],
-      "js": ["content.js"],
+      "js": [
+        "content.js"
+      ],
       "run_at": "document_idle"
     }
   ]

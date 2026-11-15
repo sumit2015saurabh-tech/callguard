@@ -13,6 +13,8 @@ window.CG_CONFIG = {
   healthUrl: "https://130-131-50-1.sslip.io/healthz",
   authCheckUrl: "https://130-131-50-1.sslip.io/v1/status",
   maxAudioSeconds: 120,
+  // Shared list of callers reported as fraud by CallGuard users (scam classifier service: /v1/callers/check, /report).
+  callersUrl: "https://20-151-8-157.sslip.io",
   // Old service addresses: a user's saved URL that starts with one of these moves to serviceUrl.
   retiredServiceUrls: ["https://call-audio-api-c3qg.onrender.com"],
   googleClientId: "",

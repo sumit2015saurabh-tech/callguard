@@ -25,7 +25,8 @@ const channelOf = (rec) => {
 const channelName = (rec) => CHANNELS[channelOf(rec)];
 const channelChip = (rec) => `<span class="chip ch-${channelOf(rec)}">${esc(channelName(rec))}</span>`;
 /** The caller's ID on that platform: phone number, Telegram user ID or @username. */
-const handleText = (h) => (/^tg:\d+$/.test(h) ? `Telegram ID ${h.slice(3)}` : h);
+const handleText = (h) => (/^tg:\d+$/.test(h) ? `Telegram ID ${h.slice(3)}`
+  : /^wa:lid:\d+$/.test(h) ? `WhatsApp ID ${h.slice(7)} (number hidden)` : h);
 const callerKeyOf = (rec) => String((rec && (rec.callerNumber || handleText(rec.callerHandle || ""))) || "");
 const callerIdOf = (rec) => {
   if (!rec) return "";
@@ -33,6 +34,74 @@ const callerIdOf = (rec) => {
   if (key || name) return key ? (name ? `${key} · ${name}` : key) : name;
   return String(rec.callerId || "");
 };
+
+/* ---------- shared fraud-caller list (all CallGuard users; scam classifier service) ----------
+   The service only accepts a caller with the signed single-use ticket it returned for a fraud/uncertain call,
+   and stores a keyed hash, never the number. "Not fraud for me" is a personal list kept in this browser. */
+const lookupKeyOf = (rec) => String((rec && (rec.callerNumber || rec.callerHandle)) || "");
+const sharedCallers = {
+  url: () => String(CFG.callersUrl || "").replace(/\/+$/, ""),
+  async post(path, body) {
+    const r = await fetch(this.url() + path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.detail || `HTTP ${r.status}`);
+    return j;
+  },
+  async check(caller) {
+    if (!this.url() || !caller) return { flagged: false, reports: 0 };
+    const out = await this.post("/v1/callers/check", { caller });
+    return { ...out, ignoredByMe: notFraudForMe().includes(caller) };
+  },
+  report(caller, ticket, manual) { return this.post("/v1/callers/report", { caller, ticket, manual: !!manual }); },
+};
+const notFraudForMe = () => LS.get("notFraudCallers", []);
+const setNotFraudForMe = (key, on) => {
+  const s = new Set(notFraudForMe()); on ? s.add(key) : s.delete(key); LS.set("notFraudCallers", [...s]);
+};
+const repeatBanner = (rec) => {
+  const p = rec.priorFlag;
+  if (!p || !p.flagged || notFraudForMe().includes(lookupKeyOf(rec))) return "";
+  const cat = CATS[p.category] ? `${p.category} · ${CATS[p.category].name}` : "fraud";
+  return `<div class="banner warn">${icon("alert")}<div><b>Repeat fraud caller.</b> CallGuard users reported this caller as fraud
+    ${p.reports} time${p.reports === 1 ? "" : "s"} before this call (${esc(cat)}${p.max_risk_score != null ? `, highest risk score ${p.max_risk_score}/100` : ""}, last ${fmtDate(p.last_seen)}).</div></div>`;
+};
+const sharedListRow = (rec) => {
+  const key = lookupKeyOf(rec);
+  if (!key) return `<div class="faint" style="font-size:12.5px">No caller ID for this call, so it can't be checked against the shared fraud-caller list.</div>`;
+  const mine = notFraudForMe().includes(key);
+  const canReport = rec.reportTicket && !rec.reported && ["fraud", "uncertain"].includes(rec.decision);
+  return `<div class="row" style="gap:8px;align-items:center">
+    ${rec.reported ? `<span class="status good">${icon("check")}On the shared fraud-caller list${rec.reported === "manual" ? " (reported by you)" : ""}</span>` : ""}
+    ${canReport ? `<button class="btn btn-sm btn-danger" data-report="${rec.id}">${icon("alert")}Report caller as fraud</button>` : ""}
+    <button class="btn btn-sm btn-ghost" data-notmine="${rec.id}">${mine ? "Show fraud warnings for this caller again" : "Not fraud for me"}</button>
+    ${rec.sharedError ? `<span class="faint" style="font-size:12px">Shared list: ${esc(rec.sharedError)}</span>` : ""}</div>`;
+};
+/** After analysis: look up earlier reports, then auto-report a fraud call. Never blocks the pipeline. */
+async function sharedCallerStep(rec) {
+  const key = lookupKeyOf(rec);
+  if (!key || !sharedCallers.url()) return;
+  try {
+    rec.priorFlag = await sharedCallers.check(key);
+    if (rec.decision === "fraud" && rec.reportTicket && !rec.reported) {
+      await sharedCallers.report(key, rec.reportTicket, false);
+      rec.reported = "auto";
+    }
+    rec.sharedError = "";
+  } catch (e) { rec.sharedError = String((e && e.message) || e); }
+}
+function bindSharedList(scope, rerender) {
+  $$("[data-report]", scope).forEach((b) => b.onclick = async () => {
+    const rec = S.calls.find((c) => c.id === b.dataset.report); if (!rec) return;
+    if (!await modal({ title: "Report this caller as fraud?", body: `Adds <b>${esc(callerIdOf(rec))}</b> to the fraud-caller list shared by all CallGuard users, so they are warned when it calls. Only a hash of the caller ID is stored.`, confirm: "Report", danger: true })) return;
+    try { await sharedCallers.report(lookupKeyOf(rec), rec.reportTicket, true); rec.reported = "manual"; rec.sharedError = ""; toast("Caller added to the shared fraud list", "alert"); }
+    catch (e) { rec.sharedError = String((e && e.message) || e); toast(`Couldn't report: ${rec.sharedError}`, "alert"); }
+    await saveRecord(rec); rerender();
+  });
+  $$("[data-notmine]", scope).forEach((b) => b.onclick = async () => {
+    const rec = S.calls.find((c) => c.id === b.dataset.notmine); if (!rec) return;
+    const key = lookupKeyOf(rec); setNotFraudForMe(key, !notFraudForMe().includes(key)); rerender();
+  });
+}
 /** "WhatsApp number" / "Telegram ID" / "Phone number", for the call details. */
 const callerKindOf = (rec) => {
   const ch = channelOf(rec);
@@ -236,7 +305,9 @@ function normalise(raw) {
     category, risk, decision,
     confidence: conf, riskScore,
     scores: pick("scores", "probabilities"),
-    labels: toLabels(pick("labels", "tags", "call_labels", "classes")),
+    // "report:<ticket>" = signed single-use ticket to add this caller to the shared fraud-caller list; not a label
+    reportTicket: kv.report || "",
+    labels: toLabels(pick("labels", "tags", "call_labels", "classes")).filter((l) => !/^report:/i.test(l)),
   };
 }
 function toLabels(v) {
@@ -480,6 +551,7 @@ function buildRecord({ token, createdAt, fileName, audioType, tr, cls, source, c
     category: code, categoryName: c.name, isFraud: code !== "F0", isBanking: !!c.banking, risk: tr.risk || c.risk, decision: tr.decision || "",
     confidence: cls.confidence != null ? Number(cls.confidence) : null, scores: cls.scores || null, classifiedBy: cls.by,
     riskScore: tr.riskScore != null ? Number(tr.riskScore) : null,
+    reportTicket: tr.reportTicket || "", priorFlag: null, reported: "",
     source, channel: CHANNELS[channel] ? channel : "phone",
     callerName, callerNumber, callerHandle,
     /* The caller ID is the number that called (or the platform ID); the contact name is shown after it. */
@@ -978,7 +1050,9 @@ async function runPipeline(blob, fileName, opts = {}) {
     const rec = buildRecord({ token, createdAt, fileName, audioType: blob.type, tr, cls, source: opts.source || "microservice", channel: opts.channel, caller: opts.caller });
     rec.notifications = planAlerts(rec);
     await saveRecord(rec, blob);
-    set("label", "done", `${rec.labels.length} labels · saved${S.dir ? " + history folder" : ""}`);
+    await sharedCallerStep(rec);                      // repeat-caller lookup + auto-report a fraud call
+    await saveRecord(rec, null);
+    set("label", "done", `${rec.labels.length} labels · saved${S.dir ? " + history folder" : ""}${rec.priorFlag && rec.priorFlag.flagged ? ` · repeat fraud caller (${rec.priorFlag.reports}× before)` : ""}`);
     cur = "alert"; set("alert", "active");
     await dispatchAlerts(rec);
     await saveRecord(rec, null);
@@ -1016,6 +1090,7 @@ function resultCard(rec) {
         <h2 style="margin-top:8px">${rec.category} · ${esc(c.name)}</h2>
         <div class="muted" style="margin-top:4px">${esc(c.advice)}</div></div>
     </div>
+    ${repeatBanner(rec)}
     <dl class="kv">
       <div><dt>Date</dt><dd>${fmtDT(rec.createdAt)}</dd></div>
       <div><dt>Token</dt><dd class="mono" title="${esc(rec.token)}">${esc(rec.token)}</dd></div>
@@ -1026,6 +1101,7 @@ function resultCard(rec) {
     </dl>
     <div><div class="lbl" style="margin-bottom:6px">Summary (from transcriber)</div><div class="summary">${esc(rec.summary || "No summary returned.")}</div></div>
     <div><div class="lbl" style="margin-bottom:6px">Labels</div><div class="row" style="gap:6px">${labelChips(rec)}</div></div>
+    <div><div class="lbl" style="margin-bottom:6px">Shared fraud-caller list</div>${sharedListRow(rec)}</div>
     <div><div class="lbl" style="margin-bottom:2px">Alerts</div>${rec.notifications.length ? rec.notifications.map((n) => notifRow(n, rec)).join("") : `<div class="faint">Not fraud, so nobody was alerted.</div>`}</div>
     <div class="row"><button class="btn" data-open="${rec.id}">Open full details</button><a class="btn btn-ghost" href="#/history">Go to history</a></div>
   </div>`;
@@ -1033,7 +1109,9 @@ function resultCard(rec) {
 
 function bindResult(box, rec) {
   $$("[data-open]", box).forEach((b) => b.onclick = () => openDrawer(b.dataset.open));
-  bindNotifActions(box, () => { box.innerHTML = resultCard(S.calls.find((c) => c.id === rec.id)); bindResult(box, rec); });
+  const again = () => { box.innerHTML = resultCard(S.calls.find((c) => c.id === rec.id)); bindResult(box, rec); };
+  bindNotifActions(box, again);
+  bindSharedList(box, again);
 }
 
 function bindNotifActions(scope, rerender) {
@@ -1184,6 +1262,7 @@ async function openDrawer(id) {
         <div class="verdict ${rec.isFraud ? "fraud" : "safe"}"><span class="v-icon">${icon(rec.isFraud ? "alert" : "shield")}</span>
           <div><div class="row">${verdictBadge(rec)}${riskBadge(rec.risk)}${rec.isBanking ? `<span class="chip">${icon("bank")}Banking</span>` : ""}${rec.reviewed ? `<span class="chip chip-cat safe">${icon("check")}Reviewed</span>` : ""}</div>
           <div class="muted" style="margin-top:8px">${esc(CATS[rec.category].advice)}</div></div></div>
+        ${repeatBanner(rec)}
         <dl class="kv">
           <div><dt>Date</dt><dd>${fmtDate(rec.createdAt)}</dd></div><div><dt>Time</dt><dd>${localTime(rec.createdAt)}</dd></div>
           <div><dt>Risk score</dt><dd>${scoreBar(rec)}</dd></div><div><dt>Duration</dt><dd>${fmtDur(rec.duration)}</dd></div>
@@ -1197,6 +1276,7 @@ async function openDrawer(id) {
         <div class="card card-pad"><div class="lbl" style="margin-bottom:8px">Labels</div>
           <div class="row" style="gap:6px">${labelChips(rec)}</div>
           <div class="faint" style="font-size:12px;margin-top:8px">Labels come from the microservice.</div></div>
+        <div class="card card-pad"><div class="lbl" style="margin-bottom:8px">Shared fraud-caller list</div>${sharedListRow(rec)}</div>
         <div class="card card-pad"><div class="row"><div class="lbl">Alerts</div><div class="spacer"></div>${rec.isFraud ? `<button class="btn btn-sm" id="reroute">Re-run routing</button>` : ""}</div>
           ${rec.notifications.length ? rec.notifications.map((n) => notifRow(n, rec)).join("") : `<div class="faint" style="margin-top:6px">No alerts for this call.</div>`}</div>
         <div class="card card-pad"><div class="lbl" style="margin-bottom:8px">Review</div>
@@ -1207,6 +1287,7 @@ async function openDrawer(id) {
       </div>`;
     $("#drClose").onclick = close;
     $("#markReviewed").onclick = async () => { rec.reviewed = !rec.reviewed; await saveRecord(rec); paint(); };
+    bindSharedList(dr, paint);
     const rr = $("#reroute"); if (rr) rr.onclick = async () => {
       const plan = planAlerts(rec);
       if (!await modal({ title: "Re-run alert routing?", body: `This uses your current contacts and adds ${plan.length} alert${plan.length === 1 ? "" : "s"}:<br>${plan.map((n) => `· ${esc(n.role)} ${esc(n.to || n.reason || "")}`).join("<br>")}`, confirm: "Send", cancel: "Cancel" })) return;
@@ -1855,6 +1936,27 @@ async function importExtensionClip(clip) {
   }
   return { ok: true, token: rec.token, category: rec.category, categoryName: rec.categoryName, isFraud: rec.isFraud, risk: rec.risk, alerts: alertCount(rec) };
 }
+
+/* Extension asks at the START of a live call: has this caller been reported as fraud? (shared list + my history) */
+window.addEventListener("message", (e) => {
+  if (e.source !== window || e.origin !== location.origin) return;
+  const d = e.data;
+  if (!d || d.source !== "callguard-extension" || d.type !== "check-caller") return;
+  const keys = [d.caller && d.caller.number, d.caller && d.caller.handle].map((x) => String(x || "").trim()).filter(Boolean);
+  Promise.resolve().then(async () => {
+    if (!keys.length) return { ok: true, flagged: false, reason: "no caller id" };
+    if (keys.some((k) => notFraudForMe().includes(k))) return { ok: true, flagged: false, ignoredByMe: true };
+    const mine = S.calls.filter((c) => c.decision === "fraud" && keys.includes(lookupKeyOf(c)));
+    for (const k of keys) {
+      const r = await sharedCallers.check(k).catch(() => null);
+      if (r && r.flagged) return { ok: true, ...r, myReports: mine.length, key: k };
+    }
+    return mine.length ? { ok: true, flagged: true, reports: mine.length, category: mine[0].category, myReports: mine.length, key: keys[0] }
+      : { ok: true, flagged: false };
+  })
+    .catch((err) => ({ ok: false, reason: String((err && err.message) || err) }))
+    .then((result) => window.postMessage({ source: "callguard-dashboard", requestId: d.requestId, result }, location.origin));
+});
 
 window.addEventListener("message", (e) => {
   if (e.source !== window || e.origin !== location.origin) return;

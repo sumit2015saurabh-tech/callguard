@@ -204,6 +204,40 @@ async function findOrOpenDashboard(base, focus) {
   return tab;
 }
 
+/* ---------- repeat fraud caller: checked when a call starts ---------- */
+const warnedCallers = new Set();
+
+/** Is this caller on CallGuard's shared fraud-caller list? Asks an OPEN dashboard tab (never opens one
+    mid-call); the dashboard does the lookup. Shows a Chrome notification the first time a flagged caller calls. */
+async function checkCaller(rawCaller) {
+  const caller = core.cleanCaller(rawCaller);
+  const key = caller.number || caller.handle;
+  if (!key) return { ok: true, flagged: false, reason: "no caller id" };
+  const settings = await getSettings();
+  let base;
+  try { base = core.normaliseDashboardUrl(settings.dashboardUrl); } catch (e) { return { ok: false, reason: e.message }; }
+  let tab = null;
+  try {
+    const path = new URL(base).pathname;
+    const tabs = await chrome.tabs.query({ url: new URL(base).origin + "/*" });
+    tab = tabs.find((t) => { try { return new URL(t.url || "").pathname.startsWith(path); } catch { return false; } }) || null;
+  } catch { /* no access */ }
+  if (!tab) return { ok: false, reason: "Open the CallGuard dashboard in a tab to check callers against the fraud list." };
+  try { await ensureBridge(tab.id, base); } catch (e) { return { ok: false, reason: e.message }; }
+  const res = await chrome.tabs.sendMessage(tab.id, { type: "cg:dashboard-check", caller })
+    .catch((e) => ({ ok: false, reason: (e && e.message) || String(e) }));
+  if (res && res.ok && res.flagged && !warnedCallers.has(key)) {
+    warnedCallers.add(key);
+    const n = Number(res.reports || 0);
+    chrome.notifications.create(`cg-flagged-${Date.now()}`, {
+      type: "basic", iconUrl: "icons/icon128.png", priority: 2, requireInteraction: true,
+      title: "⚠ CallGuard: reported FRAUD caller",
+      message: `${caller.label || key} was reported as fraud ${n} time${n === 1 ? "" : "s"}${res.category && res.category !== "unknown" ? ` (${res.category})` : ""}. Don't share codes, PINs or payments.`,
+    }, () => void chrome.runtime.lastError);
+  }
+  return res || { ok: false, reason: "No answer from CallGuard." };
+}
+
 /** Make sure content.js is live in the dashboard tab (it relays the clip into the page). */
 async function ensureBridge(tabId, base) {
   const ping = () => chrome.tabs.sendMessage(tabId, { type: "cg:ping" }).then((r) => !!(r && r.ok)).catch(() => false);
@@ -496,6 +530,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         case "cg:check":
           sendResponse(await runChecks());
+          break;
+        case "cg:check-caller":
+          sendResponse(await checkCaller(msg.caller || {}));
           break;
         default:
           sendResponse({ ok: false, reason: "Unknown request." });
