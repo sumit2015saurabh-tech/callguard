@@ -125,6 +125,17 @@ Sends the emails and notifications. It receives JSON for each alert:
 
 Without a notifier, alerts wait in the **outbox**. Emails open in the user's mail app with one click.
 
+## Chrome extension: capture a live Telegram call
+
+`extension/` is a Manifest V3 extension that records the audio of a live **Telegram Web** call and sends each spoken segment to this dashboard, where it runs through the same pipeline as an upload (microservice → transcript, summary, fraud category → history → alerts).
+
+1. Open `chrome://extensions`, turn on **Developer mode**, choose **Load unpacked**, and pick the `extension/` folder.
+2. Log in to CallGuard in a tab (clips are handed to that tab, so it must be signed in).
+3. Start the call at `web.telegram.org`. A small CallGuard dock appears bottom-right; press **Capture this call** (or start from the toolbar icon).
+4. Each voice clip is saved in the extension and can be sent from the popup. Turn on **Send each voice clip to CallGuard while the call is live** to analyze clips — and raise alerts — during the call.
+
+The extension captures the other party's voice from the tab, plays it back so the call stays audible, splits speech into clips, and keeps all audio on the device until you send it. It can mix in your own microphone, scores each clip for clarity (flagging clipping, quiet and mostly-silent clips), and its popup has a **Run reliability checks** button. Unit tests: `node --test extension/test/`. Install, permissions, settings and limits: [`extension/README.md`](extension/README.md).
+
 ## Run locally
 
 ```bash

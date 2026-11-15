@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>CallGuard</title>
+<link rel="stylesheet" href="popup.css">
+</head>
+<body>
+<header>
+  <span class="mark" aria-hidden="true">
+    <svg viewBox="0 0 24 24"><path d="M12 2.5l7.5 3v5.6c0 4.6-3.2 8.2-7.5 9.4-4.3-1.2-7.5-4.8-7.5-9.4V5.5z" fill="#2f7f78"/><path d="M8.7 11.8l2.3 2.3 4.4-4.6" fill="none" stroke="#fff" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  </span>
+  <div class="who">
+    <div class="name">CallGuard</div>
+    <div class="sub">Telegram call capture</div>
+  </div>
+  <span class="pill" id="pill">Idle</span>
+</header>
+
+<main>
+  <section class="card">
+    <div class="row between"><b id="liveTitle">Not capturing</b><span class="mono" id="timer">0:00</span></div>
+    <div class="meter"><span id="level"></span></div>
+    <div class="row between sub"><span id="liveInfo">Open a Telegram call, then capture.</span><span id="clipCount">0 clips</span></div>
+    <div class="row">
+      <button class="btn primary" id="mainBtn">Capture this call</button>
+      <button class="btn" id="dashBtn">CallGuard</button>
+    </div>
+    <p class="note err" id="note" hidden></p>
+  </section>
+
+  <section class="card">
+    <div class="row between"><h2>Captured clips</h2><button class="link" id="sendAll">Send unsent</button></div>
+    <ul class="clips" id="clips"></ul>
+    <p class="note" id="empty">No clips yet. Start a capture while a Telegram call is live.</p>
+  </section>
+
+  <details class="card" id="settings">
+    <summary>Settings</summary>
+    <label class="field"><span>CallGuard dashboard URL</span>
+      <input id="dashUrl" type="url" spellcheck="false" autocomplete="off"></label>
+    <label class="check"><input type="checkbox" id="autoSend"><span>Send each voice clip to CallGuard while the call is live</span></label>
+    <label class="check"><input type="checkbox" id="keepFullCall"><span>Also keep the whole call as one recording</span></label>
+    <label class="check"><input type="checkbox" id="autoStop"><span>Stop when the Telegram call ends</span></label>
+    <label class="check"><input type="checkbox" id="includeMic"><span>Mix my microphone into the recording (your own voice too)</span></label>
+    <label class="check"><input type="checkbox" id="skipUnclear"><span>Don't auto-send clips with poor clarity</span></label>
+    <label class="field"><span>Voice detection sensitivity</span>
+      <select id="sens">
+        <option value="low">Low — loud speech only</option>
+        <option value="medium">Medium</option>
+        <option value="high">High — quiet speech</option>
+      </select></label>
+    <p class="note">Changes save immediately. Clips never leave this browser unless you send them to CallGuard.</p>
+    <button class="btn" id="checksBtn">Run reliability checks</button>
+    <ul class="checks" id="checkList"></ul>
+  </details>
+</main>
+
+<footer>Only record calls when everyone on the call agrees.</footer>
+<div class="toast" id="toast" hidden></div>
+
+<script src="lib/core.js"></script>
+<script src="store.js"></script>
+<script src="popup.js"></script>
+</body>
+</html>
