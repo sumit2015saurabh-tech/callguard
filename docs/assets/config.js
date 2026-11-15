@@ -20,6 +20,8 @@ window.CG_CONFIG = {
   googleClientId: "",
   // Accounts on the CallGuard server (user ID + password -> automatic session token). "" = browser-only accounts.
   accountsUrl: "https://130-131-50-1.sslip.io",
+  // Sends fraud-alert emails (nominee, bank, authorised people) from the CallGuard server. "" = outbox only.
+  notifyUrl: "https://130-131-50-1.sslip.io/v1/notify",
   // Per-user sign-in (Supabase → Project Settings → API). Both empty = accounts stay in the browser.
   supabaseUrl: "",
   supabaseAnonKey: "",

@@ -452,15 +452,22 @@ const services = {
     }
   },
   async notify(n, rec) {
-    if (S.settings.notifierUrl) {
-      await fetchJSON(S.settings.notifierUrl, {
+    const url = notifyUrl();
+    if (n.channel !== "email") return "sent";   // in-app notification: shown on the Alerts page
+    if (!url) return "queued";                  // no notifier: kept in the outbox with a one-click "open in mail app"
+    try {
+      await fetchJSON(url, {
         method: "POST", headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({ to: n.to, name: n.name, role: n.role, channel: n.channel, subject: n.subject, body: n.body,
-          call_token: rec.token, category: rec.category, category_name: rec.categoryName, risk: rec.risk, created_at: rec.createdAt }),
+          call_token: rec.token, category: rec.category, category_name: rec.categoryName, risk: rec.risk, created_at: rec.createdAt,
+          reply_to: S.contacts.user.email || S.user?.email || "" }),
       });
       return "sent";
+    } catch (e) {
+      // Email not switched on at the server yet: keep it in the outbox instead of calling it a failure.
+      if (e.status === 503 || e.status === 404) { n.reason = "Email sending isn't switched on yet: open it in your mail app."; return "queued"; }
+      throw e;
     }
-    return "queued";   // no notifier: kept in the outbox with a one-click "open in mail app"
   },
 };
 
@@ -481,6 +488,8 @@ function warningText(rec) {
   ].join("\n");
 }
 
+const notifyUrl = () => String(S.settings.notifierUrl || window.CG_CONFIG?.notifyUrl || "").trim();
+
 /** Who gets told, per the routing rules. Returns notification objects (not yet sent). */
 function planAlerts(rec, C = S.contacts) {
   const out = [];
@@ -492,16 +501,14 @@ function planAlerts(rec, C = S.contacts) {
     status: person?.email || channel === "in-app" ? "pending" : "skipped", at: new Date().toISOString(), ...extra,
   });
 
+  // Rule 1 (always, every fraud): the nominee gets a notification + email with the summary and warning
+  if (C.nominee.name || isEmail(C.nominee.email)) add("Nominee", C.nominee, "in-app", { to: C.nominee.email || C.nominee.phone || "" });
+  if (isEmail(C.nominee.email)) add("Nominee", C.nominee, "email");
+  else add("Nominee", null, "email", { reason: "No nominee email added. Add one in Contacts: the nominee is always emailed." });
+  // Rule 2: banking fraud -> also the bank the nominee added
   if (rec.isBanking) {
-    // Rule 2: banking fraud -> the bank the nominee added
     if (isEmail(C.bank.email)) add("Bank", { name: C.bank.name || "Bank fraud desk", email: C.bank.email }, "email");
     else add("Bank", null, "email", { reason: "No bank added yet (the nominee adds it in Contacts)." });
-  } else {
-    // Rule 1: any other fraud -> nominee gets a notification + email with summary and warning
-    if (C.nominee.name || isEmail(C.nominee.email)) {
-      add("Nominee", C.nominee, "in-app", { to: C.nominee.email || C.nominee.phone || "" });
-      if (isEmail(C.nominee.email)) add("Nominee", C.nominee, "email");
-    } else add("Nominee", null, "email", { reason: "No nominee added yet." });
   }
   // Rule 3: every fraud -> authorised people; if none, the emergency contact by default
   const auth = (C.authorised || []).filter((a) => isEmail(a.email));
@@ -696,7 +703,7 @@ function notifRow(n, rec, actions = true) {
       <div class="n-sub">${target}${n.reason && n.to ? ` · ${esc(n.reason)}` : ""}</div></div>
     ${notifStatus(n)}
     ${actions && n.channel === "email" && n.to && ["queued", "failed"].includes(n.status) ? `<a class="btn btn-sm btn-soft" href="${mailto(n)}" data-mailed="${rec.id}:${n.id}">${icon("mail")}Open in mail</a>` : ""}
-    ${actions && n.status === "failed" ? `<button class="btn btn-sm" data-retry="${rec.id}:${n.id}">Retry</button>` : ""}
+    ${actions && (n.status === "failed" || (n.status === "queued" && n.channel === "email" && n.to && notifyUrl())) ? `<button class="btn btn-sm" data-retry="${rec.id}:${n.id}">${n.status === "queued" ? "Send now" : "Retry"}</button>` : ""}
   </div>`;
 }
 
@@ -872,8 +879,8 @@ function routingSummary() {
   const auth = C.authorised.filter((a) => isEmail(a.email));
   return `<table class="rules">
     <tr><td style="width:42%">${riskBadge("low")} Not fraud (F0)</td><td>Logged with date, token and summary. No alerts.</td></tr>
-    <tr><td>${icon("bank")} Banking fraud (F1, F2)</td><td>Email to bank: ${who(C.bank.email ? { name: C.bank.name, email: C.bank.email } : null, "No bank added")}</td></tr>
-    <tr><td>${icon("alert")} Other fraud (F3–F9)</td><td>Notification + email to nominee: ${who(C.nominee, "No nominee")}</td></tr>
+    <tr><td>${icon("alert")} Every fraud (F1–F9)</td><td>Notification + email to nominee (always): ${who(isEmail(C.nominee.email) ? C.nominee : null, "No nominee email")}</td></tr>
+    <tr><td>${icon("bank")} Banking fraud (F1, F2)</td><td>Also email to bank: ${who(C.bank.email ? { name: C.bank.name, email: C.bank.email } : null, "No bank added")}</td></tr>
     <tr><td>${icon("shield")} Every fraud</td><td>${auth.length ? `Authorised: ${auth.map((a) => `<b>${esc(a.name || a.email)}</b>`).join(", ")}` : `Emergency contact (default): ${who(C.emergency, "None added")}`}</td></tr>
   </table>`;
 }
@@ -1104,7 +1111,7 @@ async function runPipeline(blob, fileName, opts = {}) {
     await dispatchAlerts(rec);
     await saveRecord(rec, null);
     const n = alertCount(rec);
-    set("alert", "done", rec.isFraud ? `${n} alert${n === 1 ? "" : "s"} ${S.settings.notifierUrl ? "sent" : "in outbox"}` : "Not fraud: no alerts needed");
+    set("alert", "done", rec.isFraud ? `${n} alert${n === 1 ? "" : "s"} ${notifyUrl() ? "sent" : "in outbox"}` : "Not fraud: no alerts needed");
     S.run.rec = rec;
     S.pending = null; idb.kvSet("pending", null).catch(() => {});
     if ($("#filePill")) $("#filePill").innerHTML = "";
@@ -1175,7 +1182,7 @@ function bindNotifActions(scope, rerender) {
     const [cid, nid] = b.dataset.retry.split(":"); const rec = S.calls.find((c) => c.id === cid);
     const n = rec?.notifications.find((x) => x.id === nid); if (!n) return;
     n.status = "pending"; n.reason = ""; await dispatchAlerts(rec); await saveRecord(rec);
-    toast(n.status === "failed" ? "Still failing: " + n.reason : "Alert resent", n.status === "failed" ? "alert" : "check");
+    toast(n.status === "failed" ? "Still failing: " + n.reason : n.status === "queued" ? (n.reason || "Still in the outbox") : `Email sent to ${n.to}`, n.status === "sent" ? "check" : "alert");
     rerender && rerender();
   });
 }
@@ -1363,7 +1370,7 @@ VIEWS.alerts = (root) => {
   let fStatus = "all", fRole = "all";
   const counts = (st) => all.filter(({ n }) => st.includes(n.status)).length;
   root.innerHTML = `
-    <p class="section-intro">Every alert CallGuard planned for a fraud call. Without a notifier service, emails wait in the outbox: open each one in your mail app with a click. With a notifier URL in Settings they are sent automatically.</p>
+    <p class="section-intro">Every alert CallGuard sent for a fraud call. Emails go out automatically from the CallGuard server to your nominee, your authorised people and, for banking fraud, your bank. If sending isn't available, they wait in the outbox: use <b>Send now</b> or open them in your mail app.</p>
     <div class="grid g-4" style="margin-bottom:18px">
       <div class="card kpi"><div class="k-label">Sent / delivered</div><div class="k-value">${counts(["sent", "delivered"])}</div></div>
       <div class="card kpi"><div class="k-label">In outbox</div><div class="k-value">${counts(["queued"])}</div></div>
@@ -1396,12 +1403,12 @@ VIEWS.contacts = (root) => {
   };
   const nomineeReady = !!(C.nominee.name || C.nominee.email);
   root.innerHTML = `
-    <p class="section-intro">Tell CallGuard who to warn. Banking fraud goes to the bank your nominee adds, other fraud goes to the nominee, and every fraud also goes to your authorised people (or your emergency contact if you have none).</p>
+    <p class="section-intro">Tell CallGuard who to warn. Every fraud is emailed to your nominee and your authorised people (or your emergency contact if you have none). Banking fraud is also emailed to the bank your nominee adds.</p>
     <div class="grid g-2">
       <div class="card contact-card"><div class="c-head"><span class="c-icon">${icon("users")}</span><div><h3>You (account holder)</h3><div class="faint" style="font-size:12.5px">Shown in alerts so people know whose call it was</div></div></div>
         <div class="form-grid">${inp("user.name", "Full name", "text", "Your name")}${inp("user.email", "Email", "email", "you@example.com")}${inp("user.phone", "Phone", "tel", "+1 …")}</div></div>
-      <div class="card contact-card"><div class="c-head"><span class="c-icon lav">${icon("users")}</span><div><h3>Nominee</h3><div class="faint" style="font-size:12.5px">Gets a notification + email for non-banking fraud (F3–F9)</div></div></div>
-        <div class="form-grid">${inp("nominee.name", "Name", "text", "e.g. Priya Sharma")}${inp("nominee.relation", "Relation", "text", "Daughter, spouse…")}${inp("nominee.email", "Email", "email", "nominee@example.com")}${inp("nominee.phone", "Phone", "tel", "+1 …")}</div></div>
+      <div class="card contact-card"><div class="c-head"><span class="c-icon lav">${icon("users")}</span><div><h3>Nominee</h3><div class="faint" style="font-size:12.5px">Always gets a notification + email for every fraud. Email required</div></div></div>
+        <div class="form-grid">${inp("nominee.name", "Name", "text", "e.g. Priya Sharma")}${inp("nominee.relation", "Relation", "text", "Daughter, spouse…")}${inp("nominee.email", "Email (required)", "email", "nominee@example.com")}${inp("nominee.phone", "Phone", "tel", "+1 …")}</div></div>
       <div class="card contact-card"><div class="c-head"><span class="c-icon sand">${icon("bank")}</span><div><h3>Bank fraud desk</h3><div class="faint" style="font-size:12.5px">Added by the nominee · emailed for banking fraud (F1, F2)</div></div></div>
         ${!nomineeReady ? `<div class="banner warn" style="margin-bottom:12px">${icon("alert")}<div>Add a nominee first. The nominee adds the bank.</div></div>` : ""}
         <div class="form-grid">${inp("bank.name", "Bank name", "text", "e.g. Chase", !nomineeReady)}${inp("bank.email", "Fraud-desk email", "email", "fraud@bank.com", !nomineeReady)}${inp("bank.branch", "Branch / notes", "text", "Optional", !nomineeReady)}
@@ -1473,7 +1480,7 @@ VIEWS.settings = (root) => {
           <span class="hint">POST multipart <span class="mono">${esc(CFG.audioField)}</span> (one field only), header <span class="mono">Authorization: Bearer &lt;token&gt;</span>.</span></div>
         ${cloud.on ? `<div class="banner">${icon("shield")}<div>You're verified by your sign-in: every call carries your personal token, and the microservice checks it.</div></div>` : `<div class="field"><label for="sKey">API token</label><input class="input" id="sKey" type="password" data-k="apiKey" value="${esc(st.apiKey)}" autocomplete="off" spellcheck="false" placeholder="Paste the token issued by the service">
           <span class="hint">Required. Saved only in this browser, for your account. It's sent only to the microservice and never included in backups.</span></div>`}
-        <div class="field"><label for="sNo">Notifier URL (email / push, optional)</label><input class="input" id="sNo" data-k="notifierUrl" placeholder="https://your-host/notify" value="${esc(st.notifierUrl)}">
+        <div class="field"><label for="sNo">Notifier URL (optional, overrides the built-in email sender)</label><input class="input" id="sNo" data-k="notifierUrl" placeholder="${esc(window.CG_CONFIG?.notifyUrl || "https://your-host/notify")}" value="${esc(st.notifierUrl)}">
           <span class="hint">POST JSON <span class="mono">{to, role, channel, subject, body, call_token, category}</span> per alert. Without it, emails go to the outbox.</span></div>
         <div class="form-grid">
           <div class="field"><label for="sTo">Timeout (seconds)</label><input class="input" id="sTo" type="number" min="10" max="900" data-k="timeoutSec" value="${esc(st.timeoutSec)}"></div>
