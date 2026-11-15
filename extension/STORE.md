@@ -33,8 +33,8 @@ WHAT IT DOES
   queue, one request at a time — or all at once afterwards.
 - Warns you inside the call when it has been running for five minutes, and immediately if a part of
   it came back as fraud.
-- Optional: mix in your own microphone, record a short clip per utterance instead of one file, and
-  stop automatically when the call ends.
+- Records both sides of the call automatically (your microphone is recorded, never played back),
+  and stops when the call ends.
 
 WHAT IT DOES NOT DO
 
@@ -57,9 +57,9 @@ Record calls only where everyone on the call consents.
 |---|---|
 | `tabCapture` | Captures the audio of the Telegram tab the user explicitly starts a capture on, so the call can be recorded. |
 | `activeTab` | Lets the capture start from the toolbar icon on the active tab, which Chrome requires for tab audio. |
-| `audioCapture` | Used only when the user enables "Mix my microphone into the recording". |
+| `audioCapture` | Mixes the user's microphone into the recording so both sides of the call are captured. |
 | `offscreen` | A service worker cannot use MediaRecorder or Web Audio; a hidden document records the captured stream. |
-| `storage`, `unlimitedStorage` | Stores settings and the captured clips locally (IndexedDB) so the user can preview, download or send them. |
+| `storage`, `unlimitedStorage` | Stores the captured clips locally (IndexedDB) so the user can preview, download or send them. |
 | `scripting` | Injects the clip bridge into an already-open CallGuard dashboard tab. |
 | Host `https://web.telegram.org/*` | Shows the capture dock and detects an active call. |
 | Host `https://sumit2015saurabh-tech.github.io/*` | Places captured clips into the signed-in CallGuard dashboard. |

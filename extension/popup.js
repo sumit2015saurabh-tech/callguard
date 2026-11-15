@@ -1,5 +1,6 @@
-/* CallGuard popup: live capture state, captured clips, clarity, reliability checks, settings.
-   Recording happens in the offscreen document, so closing this popup never stops a capture. */
+/* CallGuard popup: live capture state and captured clips.
+   Recording happens in the offscreen document, so closing this popup never stops a capture.
+   There is no settings panel: every capture option is fixed on in lib/core.js. */
 (() => {
   "use strict";
   const $ = (s) => document.querySelector(s);
@@ -17,12 +18,11 @@
   const isCallTab = (tab) => !!tab && core.isCallUrl(tab.url);
 
   let live = { active: false };
-  let settings = null;
+  let settings = { dashboardUrl: DASH };
   let activeTab = null;
   let callTabs = [];
   let clips = [];
   let signature = "";
-  let settingsLoaded = false;
   const urls = new Map();
   let toastTimer = 0;
 
@@ -30,23 +30,9 @@
 
   async function init() {
     bind();
-    const r = await send({ type: "cg:settings:get" });
-    if (r && r.ok) { settingsLoaded = true; fillSettings(r.settings); }
     await refresh();
     setInterval(refresh, 1200);
     window.addEventListener("unload", () => urls.forEach((u) => URL.revokeObjectURL(u)));
-  }
-
-  function fillSettings(s) {
-    if (!s) return;
-    settings = s;
-    if (document.activeElement !== $("#dashUrl")) $("#dashUrl").value = s.dashboardUrl || DASH;
-    $("#autoSend").checked = !!s.autoSend;
-    $("#keepFullCall").checked = s.keepFullCall !== false;
-    $("#autoStop").checked = s.autoStop !== false;
-    $("#duplex").checked = !!s.duplex;
-    $("#skipUnclear").checked = s.skipUnclear !== false;
-    $("#sens").value = s.sensitivity || "medium";
   }
 
   async function refresh() {
@@ -57,8 +43,7 @@
     ]);
     if (st && st.ok) {
       live = st.live || { active: false };
-      if (!settingsLoaded && st.settings) { settingsLoaded = true; fillSettings(st.settings); }
-      else if (st.settings) settings = { ...(settings || {}), dashboardUrl: st.settings.dashboardUrl };
+      if (st.settings && st.settings.dashboardUrl) settings = { dashboardUrl: st.settings.dashboardUrl };
     }
     activeTab = (tabList && tabList[0]) || null;
     callTabs = tabs || [];
@@ -88,7 +73,7 @@
     $("#mainBtn").disabled = !on && !isCallTab(activeTab) && !callTabs.length;
     $("#note").hidden = !(on && live.micError);
     $("#note").textContent = on && live.micError ? `Your voice isn't being recorded: ${live.micError}` : "";
-    $("#dashBtn").onclick = () => chrome.tabs.create({ url: (settings && settings.dashboardUrl) || DASH });
+    $("#dashBtn").onclick = () => chrome.tabs.create({ url: settings.dashboardUrl || DASH });
   }
 
   async function renderClips() {
@@ -171,8 +156,6 @@
       signature = "";
       await renderClips();
     };
-    $("#checksBtn").onclick = runChecks;
-
     $("#clips").addEventListener("click", async (e) => {
       const btn = e.target.closest("button[data-act]");
       if (!btn) return;
@@ -203,50 +186,6 @@
       }
     });
 
-    $("#dashUrl").onchange = saveDashboardUrl;
-    $("#autoSend").onchange = () => savePatch({ autoSend: $("#autoSend").checked });
-    $("#keepFullCall").onchange = () => savePatch({ keepFullCall: $("#keepFullCall").checked });
-    $("#autoStop").onchange = () => savePatch({ autoStop: $("#autoStop").checked });
-    $("#duplex").onchange = () => savePatch({ duplex: $("#duplex").checked });
-    $("#skipUnclear").onchange = () => savePatch({ skipUnclear: $("#skipUnclear").checked });
-    $("#sens").onchange = () => savePatch({ sensitivity: $("#sens").value });
-  }
-
-  async function runChecks() {
-    const list = $("#checkList");
-    list.innerHTML = "<li>Running checks…</li>";
-    const r = await send({ type: "cg:check" });
-    if (!r || !r.ok) {
-      list.innerHTML = `<li class="bad"><b>!</b><span>${esc((r && r.reason) || "Checks couldn't run.")}</span></li>`;
-      return;
-    }
-    list.innerHTML = "";
-    for (const c of r.checks) {
-      const li = document.createElement("li");
-      if (!c.ok) li.className = "bad";
-      li.innerHTML = `<b>${c.ok ? "✓" : "!"}</b><span>${esc(c.name)}</span><span class="sub">${esc(c.detail || "")}</span>`;
-      list.appendChild(li);
-    }
-  }
-
-  async function savePatch(patch) {
-    const r = await send({ type: "cg:settings:set", patch });
-    if (r && r.ok) settings = r.settings;
-    else toast((r && r.reason) || "Couldn't save that setting.");
-  }
-
-  async function saveDashboardUrl() {
-    const raw = $("#dashUrl").value.trim();
-    let origin;
-    try { origin = new URL(raw).origin; }
-    catch { toast("That dashboard URL isn't valid."); return; }
-    const granted = await chrome.permissions.contains({ origins: [origin + "/*"] }).catch(() => false);
-    if (!granted) {
-      const ok = await chrome.permissions.request({ origins: [origin + "/*"] }).catch(() => false);
-      if (!ok) toast("Chrome didn't grant access to that site, so clips can't be handed to it.");
-    }
-    const r = await send({ type: "cg:settings:set", patch: { dashboardUrl: raw } });
-    if (r && r.ok) { settings = r.settings; toast("Dashboard URL saved."); }
   }
 
   async function onMain() {

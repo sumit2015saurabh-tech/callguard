@@ -18,6 +18,9 @@
     ["audio/webm;codecs=opus", "audio/ogg;codecs=opus", "audio/webm"],
     (type) => !!self.MediaRecorder && MediaRecorder.isTypeSupported(type)
   );
+  /* High input quality: Opus at 128 kbps keeps the transcription service's audio clean. */
+  const AUDIO_BITS_PER_SECOND = 128000;
+  const RECORDER_OPTIONS = { audioBitsPerSecond: AUDIO_BITS_PER_SECOND, ...(MIME ? { mimeType: MIME } : {}) };
   const MAX_CALL_MS = 45 * 60 * 1000;
   const MIC_GAIN = 0.8;          // keeps the other party's voice dominant in the mix
   const FRAME_MS = core.SEGMENT_DEFAULTS.frameMs;
@@ -177,7 +180,7 @@
   function openSegment(startedAt) {
     if (!S.dest || S.seg) return;
     let rec;
-    try { rec = MIME ? new MediaRecorder(S.dest.stream, { mimeType: MIME }) : new MediaRecorder(S.dest.stream); }
+    try { rec = new MediaRecorder(S.dest.stream, RECORDER_OPTIONS); }
     catch { return; }
     const seg = { rec, startedAt, chunks: [], info: null, finish: null };
     seg.finished = new Promise((resolve) => { seg.finish = resolve; });
@@ -212,7 +215,7 @@
   function startFull() {
     if (!S.dest) return false;
     let rec;
-    try { rec = MIME ? new MediaRecorder(S.dest.stream, { mimeType: MIME }) : new MediaRecorder(S.dest.stream); }
+    try { rec = new MediaRecorder(S.dest.stream, RECORDER_OPTIONS); }
     catch { return false; }
     S.full = rec;
     S.fullChunks = [];
@@ -239,7 +242,7 @@
   function startPart() {
     if (!S.dest || !S.session || !S.session.chunkSec) return null;
     let rec;
-    try { rec = MIME ? new MediaRecorder(S.dest.stream, { mimeType: MIME }) : new MediaRecorder(S.dest.stream); }
+    try { rec = new MediaRecorder(S.dest.stream, RECORDER_OPTIONS); }
     catch { return null; }
     const part = { rec, startedAt: Date.now(), chunks: [], finish: null };
     part.finished = new Promise((resolve) => { part.finish = resolve; });
@@ -289,7 +292,11 @@
   async function openMic() {
     try {
       const mic = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        audio: {
+          channelCount: { ideal: 1 },
+          sampleRate: { ideal: 48000 },
+          echoCancellation: true, noiseSuppression: true, autoGainControl: true,
+        },
         video: false,
       });
       const micSrc = S.ctx.createMediaStreamSource(mic);

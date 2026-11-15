@@ -30,20 +30,17 @@ it to the Chrome Web Store.
    agrees to being recorded.
 3. Speak normally. The extension plays the captured audio back through your speakers (Chrome mutes
    a captured tab, so this keeps the call audible) and records the call as **one continuous file**
-   from the moment you press capture until you stop. Turn off *Record the whole call as one
-   continuous file* in Settings to get a separate short clip per utterance instead (a pause of
-   about a second closes a clip, and long speech is split at 40 seconds).
+   from the moment you press capture until you stop.
 4. The recording is listed in the popup with playback, download and delete. Press
    **Analyze in CallGuard**, or **Send unsent** for everything, and the dashboard opens, analyzes it
    and saves it to history with a token and the usual alerts. The microservice accepts at most
    120 seconds per request, so a whole-call file longer than that must be trimmed (or captured as
    short clips) before it can be analyzed; it can always be downloaded.
-5. Turn on **Send to CallGuard automatically** (Settings) to have each recording handed over as
-   soon as it is ready — a clip while the call is live, the whole-call file when you stop — so
-   alerts fire without waiting.
+5. Auto-send is always on: each recording is handed over as soon as it is ready — 20-second parts
+   while the call is live, the whole-call file when you stop — so alerts fire without waiting.
 
-**Stop** from the dock or the popup. With **Stop when the call ends** on, a capture also ends by
-itself a few seconds after the call UI disappears.
+**Stop** from the dock or the popup. A capture also ends by itself a few seconds after the call UI
+disappears.
 
 ## Caller ID and source of call
 
@@ -61,15 +58,15 @@ than guessing.
 ## What is recorded
 
 - The **other party's voice**, taken from the Telegram or WhatsApp tab's audio, as one continuous
-  recording per capture (or as separate voice clips, when the whole-call file is switched off).
-- Your own voice too, when **Mix my microphone into the recording** is on (Settings). The mic is
-  mixed in at 0.8 gain so the caller stays dominant, and it is **only** sent to the recorder — never
-  played back through the speakers, which would cause feedback in the call.
+  recording per capture.
+- Your own voice too: the microphone is always mixed in, at 0.8 gain so the caller stays dominant.
+  It is **only** sent to the recorder — never played back through the speakers, which would cause
+  feedback in the call.
 - The whole-call file is never split: one file spans the capture from start to stop. It stays in the
   browser unless you send it, and the microservice accepts at most 120 seconds per request, so the
   file itself has to be trimmed before it can be analyzed; it can always be downloaded.
-- While *Send to CallGuard automatically* is on, the same audio is also cut into **20-second parts**
-  that are queued and handed to the dashboard **one at a time**, in order. A long call is therefore
+- The same audio is also cut into **20-second parts** that are queued and handed to the dashboard
+  **one at a time**, in order, as soon as each part is ready. A long call is therefore
   analyzed while it happens, every request stays far inside the 120-second limit, and each part is
   deleted as soon as CallGuard accepts it — the popup still shows a single recording.
 
@@ -79,10 +76,10 @@ uploads it with your signed-in session (or API token) exactly like a manual uplo
 
 ## Clarity
 
-Every **voice clip** (up to 40 s, i.e. when the whole-call file is switched off) is decoded and
-measured before it is stored, so a useless recording is visible instead of silently producing a bad
-transcript. The whole-call file is skipped — decoding 45 minutes of audio only to score it would
-cost far more memory than it is worth. Each voice clip gets a **0–100 clarity score** and a verdict:
+Every **20-second analysis part** is decoded and measured before it is queued, so useless audio is
+skipped instead of silently producing a bad transcript. The whole-call file is skipped — decoding 45
+minutes of audio only to score it would cost far more memory than it is worth. Each part gets a
+**0–100 clarity score** and a verdict:
 
 | Verdict | Score | What it means |
 |---|---|---|
@@ -90,22 +87,29 @@ cost far more memory than it is worth. Each voice clip gets a **0–100 clarity 
 | Fair | 50–74 | Usable, but quiet, clipped in places, or with long gaps. |
 | Poor | 0–49 | Very quiet, heavily clipped, or almost entirely silence. |
 
-The popup shows the score and the reasons (`quiet`, `clipping`, `mostly silence`, `long gaps`, …).
-With **Don't auto-send clips with poor clarity** on (default), a poor clip is kept and marked
-*Unclear · not sent* instead of being sent automatically; you can still send it by hand. The check
-runs on the actual recorded audio, so mic mixing and tab volume are reflected in the result.
+The clarity gate is always on: a part that is mostly silence is dropped without spending a request
+on it, and any recording that scores poor is marked *Unclear · not sent* instead of being sent
+automatically — you can still send it by hand, and the score and reasons (`quiet`, `clipping`,
+`mostly silence`, `long gaps`, …) show in the popup. The check runs on the actual recorded audio, so
+mic mixing and tab volume are reflected in the result.
 
-## Settings (toolbar icon → Settings)
+## Capture settings (fixed)
 
-| Setting | Default | What it does |
-|---|---|---|
-| CallGuard dashboard URL | the public dashboard | Where recordings are handed over. Another host asks for site access the first time. |
-| Send to CallGuard automatically | off | Hands each recording over as soon as it is ready; a live call goes in 20-second parts (queued, one at a time). |
-| Record the whole call as one continuous file | on | One `…-call.webm` per capture. Uncheck for a short clip per utterance. |
-| Stop when the call ends | on | Ends the capture shortly after the call UI disappears. |
-| Mix my microphone into the recording | off | Adds your own voice to every clip (recording only). |
-| Don't auto-send clips with poor clarity | on | Keeps quiet or clipped clips locally until you send them. |
-| Voice detection sensitivity | medium | Lower thresholds pick up quieter speech; raise it in a noisy room. |
+The popup has **no settings panel**. Every capture runs fully enabled:
+
+| Always on | What it does |
+|---|---|
+| Whole-call recording | One `…-call.webm` per capture, from capture to stop. |
+| Send to CallGuard automatically | Hands each recording over as soon as it is ready; a live call goes in 20-second parts (queued, one at a time). |
+| Stop when the call ends | Ends the capture shortly after the call UI disappears. |
+| Two-way recording | Adds your own voice to the recording (recorded, never played back). |
+| Clarity gate | Quiet, clipped or mostly-silent audio is never auto-sent. |
+| Voice detection sensitivity | High, so quiet speech is picked up too. |
+| Audio quality | Opus at 128 kbps; the microphone is requested at 48 kHz. |
+
+Only the dashboard URL (where recordings are handed over) is configurable, in
+`lib/core.js` (`SETTINGS_DEFAULTS.dashboardUrl`); `mergeSettings()` re-applies the fixed options, so
+a value saved by an older build can't turn a feature back off.
 
 ## Long calls
 
@@ -183,8 +187,8 @@ mkdir -p dist && (cd extension && zip -r ../dist/callguard-extension-1.1.0.zip .
 Before uploading:
 
 1. Bump `version` in `manifest.json` and the zip name above; Chrome refuses a repeated version.
-2. Run the unit tests, then load the unpacked extension and press **Settings → Run reliability
-   checks**.
+2. Run the unit tests (`./extension_check.sh --fast`), then load the unpacked extension and capture
+   a short call to confirm the popup lists it and it reaches CallGuard on its own.
 3. Capture a short Telegram call and a short WhatsApp call end to end: clip captured → clarity
    shown → sent → appears in the dashboard's history with a token, the correct source and caller
    ID, and alerts.
@@ -212,11 +216,9 @@ Or run every check at once, from the repository root:
 ./extension_check.sh --package    # also build dist/callguard-extension-<version>.zip
 ```
 
-The popup also has **Settings → Run reliability checks**, which verifies at runtime: tab-capture and
-offscreen APIs present, bridge injection available, clip storage readable/writable, a Telegram tab
-open, the dashboard URL valid, and whether the dashboard bridge answers (i.e. the dashboard tab is
-loaded and logged in). Everything is reported as a pass/fail line, so a broken setup is obvious
-before a call starts.
+`./extension_check.sh` also verifies the wiring the extension depends on: manifest and script order
+in both pages, unit tests, and (when Chrome is present) that Chrome packs the extension and that the
+dashboard boots.
 
 ## Limits and troubleshooting
 
@@ -245,8 +247,8 @@ before a call starts.
 
 ## Two-way calls (your voice as Speaker 2)
 
-With **Two-way call** on (the default), the recording is stereo: the caller on the left channel
-(Speaker 1), your microphone on the right (Speaker 2). The transcription service transcribes each side
+The recording is always stereo: the caller on the left channel (Speaker 1), your microphone on the
+right (Speaker 2). The transcription service transcribes each side
 separately and labels the turns. The first time you capture, a tab (`mic.html`) asks for the
 microphone once, because the hidden recorder can't show Chrome's prompt; allow it, then press
 **Capture this call** again. If the mic is blocked, the dock and popup say "caller only".

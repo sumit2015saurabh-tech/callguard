@@ -35,25 +35,7 @@
     <p class="note" id="empty">Nothing recorded yet. Start a capture while a Telegram or WhatsApp call is live.</p>
   </section>
 
-  <details class="card" id="settings">
-    <summary>Settings</summary>
-    <label class="field"><span>CallGuard dashboard URL</span>
-      <input id="dashUrl" type="url" spellcheck="false" autocomplete="off"></label>
-    <label class="check"><input type="checkbox" id="autoSend"><span>Send to CallGuard automatically (a live call goes in 20-second parts)</span></label>
-    <label class="check"><input type="checkbox" id="keepFullCall"><span>Record the whole call as one continuous file (off = a short clip per utterance)</span></label>
-    <label class="check"><input type="checkbox" id="autoStop"><span>Stop when the call ends</span></label>
-    <label class="check"><input type="checkbox" id="duplex"><span>Two-way call: record my voice too (caller = Speaker 1, me = Speaker 2)</span></label>
-    <label class="check"><input type="checkbox" id="skipUnclear"><span>Don't auto-send clips with poor clarity</span></label>
-    <label class="field"><span>Voice detection sensitivity</span>
-      <select id="sens">
-        <option value="low">Low — loud speech only</option>
-        <option value="medium">Medium</option>
-        <option value="high">High — quiet speech</option>
-      </select></label>
-    <p class="note">Changes save immediately. Clips never leave this browser unless you send them to CallGuard.</p>
-    <button class="btn" id="checksBtn">Run reliability checks</button>
-    <ul class="checks" id="checkList"></ul>
-  </details>
+  <p class="note">Always on: whole-call recording, auto-send, stop when the call ends, two-way audio and high voice sensitivity. Clips never leave this browser unless they are sent to CallGuard.</p>
 </main>
 
 <footer>Only record calls when everyone on the call agrees.</footer>

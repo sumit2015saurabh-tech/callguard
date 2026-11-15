@@ -10,14 +10,26 @@
 })(typeof globalThis !== "undefined" ? globalThis : null, function () {
   "use strict";
 
+  /* The extension has no settings panel: every capture runs with every option on. SETTINGS_FIXED
+     is applied on top of whatever was saved, so a value from an older build can't switch a
+     feature off. Only the dashboard URL remains configurable. */
   const SETTINGS_DEFAULTS = Object.freeze({
     dashboardUrl: "https://sumit2015saurabh-tech.github.io/callguard/",
-    autoSend: false,
+    autoSend: true,
     autoStop: true,
     keepFullCall: true,
-    sensitivity: "medium",
+    sensitivity: "high",
     duplex: true,                 // two-way call: caller on the left channel, my mic on the right
     skipUnclear: true,
+  });
+
+  const SETTINGS_FIXED = Object.freeze({
+    autoSend: true,               // hand each recording to CallGuard as soon as it is ready
+    autoStop: true,               // end the capture shortly after the call ends
+    keepFullCall: true,           // one continuous file per call
+    duplex: true,                 // record both voices
+    skipUnclear: true,            // never auto-send a clip with poor clarity
+    sensitivity: "high",          // pick up quiet speech too
   });
 
   const SENSITIVITIES = Object.freeze(["low", "medium", "high"]);
@@ -120,7 +132,8 @@
     return THRESHOLDS[sensitivity] || THRESHOLDS.medium;
   }
 
-  /** Merge a saved/patch settings object onto a base, ignoring wrong types and bad URLs. */
+  /** Merge a saved/patch settings object onto a base, ignoring wrong types and bad URLs.
+   *  The capture options are always SETTINGS_FIXED; only dashboardUrl is configurable. */
   function mergeSettings(base, patch) {
     const out = { ...SETTINGS_DEFAULTS, ...(base && typeof base === "object" ? base : {}) };
     const next = patch && typeof patch === "object" ? patch : {};
@@ -136,6 +149,7 @@
     }
     try { out.dashboardUrl = normaliseDashboardUrl(out.dashboardUrl); }
     catch { out.dashboardUrl = SETTINGS_DEFAULTS.dashboardUrl; }
+    Object.assign(out, SETTINGS_FIXED);
     return out;
   }
 
@@ -258,6 +272,7 @@
 
   return {
     SETTINGS_DEFAULTS,
+    SETTINGS_FIXED,
     SENSITIVITIES,
     THRESHOLDS,
     SEGMENT_DEFAULTS,

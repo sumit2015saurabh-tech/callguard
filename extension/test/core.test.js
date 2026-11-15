@@ -37,21 +37,24 @@ function gap({ seconds = 1, rate = 16000 } = {}) {
 }
 
 /* ---------- settings ---------- */
-test("settings: defaults are complete and merged without surprises", () => {
+test("settings: every capture option defaults on, and stays on", () => {
   const d = mergeSettings();
-  assert.equal(d.sensitivity, "medium");
-  assert.equal(d.autoSend, false);
+  assert.equal(d.sensitivity, "high");
+  assert.equal(d.autoSend, true);
   assert.equal(d.duplex, true);
   assert.equal(d.skipUnclear, true);
   assert.equal(d.keepFullCall, true);
+  assert.equal(d.autoStop, true);
   assert.equal(d.dashboardUrl, SETTINGS_DEFAULTS.dashboardUrl);
 
-  assert.equal(mergeSettings(d, { sensitivity: "high" }).sensitivity, "high");
-  assert.equal(mergeSettings(d, { sensitivity: "max" }).sensitivity, "medium", "unknown sensitivity falls back");
-  assert.equal(mergeSettings(d, { autoSend: true }).autoSend, true);
-  assert.equal(mergeSettings(d, { autoSend: "yes" }).autoSend, false, "strings are not silently truthy");
-  assert.equal(mergeSettings(d, { duplex: true, skipUnclear: false }).duplex, true);
-  assert.equal(mergeSettings(d, { duplex: true, skipUnclear: false }).skipUnclear, false);
+  /* There is no settings panel: a saved value can't switch a capture option off. */
+  const off = mergeSettings(d, { autoSend: false, autoStop: false, keepFullCall: false, duplex: false, skipUnclear: false, sensitivity: "low" });
+  for (const key of ["autoSend", "autoStop", "keepFullCall", "duplex", "skipUnclear"]) {
+    assert.equal(off[key], true, `${key} stays on`);
+  }
+  assert.equal(off.sensitivity, "high", "sensitivity stays high");
+  assert.equal(mergeSettings(d, { sensitivity: "max" }).sensitivity, "high", "unknown sensitivity falls back to high");
+  assert.equal(mergeSettings(d, { autoSend: "yes" }).autoSend, true, "strings are not silently truthy");
   assert.equal(mergeSettings(d, { dashboardUrl: "not a url" }).dashboardUrl, d.dashboardUrl, "a bad URL is ignored");
 });
 

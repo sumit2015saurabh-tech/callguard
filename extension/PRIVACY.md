@@ -6,12 +6,10 @@ CallGuard dashboard you are signed in to. This page describes exactly what that 
 ## What is recorded
 
 - Audio of the Telegram tab, from the moment you press **Capture this call** until you press
-  **Stop** (or the call ends, when automatic stop is on). It is saved as one continuous recording
-  per capture, or as separate short clips when the whole-call file is switched off. With
-  *Send to CallGuard automatically* on, that same audio is also cut into 20-second parts and queued
-  for the dashboard, one request at a time.
-- Your microphone, **only** if you turn on *Mix my microphone into the recording*. It is mixed into
-  the recording and never played back. The setting is off by default.
+  **Stop** (or the call ends on its own). It is saved as one continuous recording per capture. The
+  same audio is also cut into 20-second parts that are queued for the dashboard automatically, one
+  request at a time.
+- Your microphone: it is always mixed into the recording and never played back.
 
 ## Where the audio is stored
 
@@ -22,8 +20,8 @@ the popup, and uninstalling the extension removes the store.
 
 ## What leaves the device, and when
 
-Nothing is transmitted while recording. A recording is sent only when you press **Analyze in CallGuard**
-or **Send unsent**, or when you enable *Send to CallGuard automatically*.
+Nothing is transmitted while recording. A recording is sent automatically once it is ready, or when
+you press **Analyze in CallGuard** or **Send unsent**.
 In that case the clip goes to the CallGuard dashboard tab you are signed in to, which uploads it to
 the CallGuard microservice for transcription and fraud classification. From there, the dashboard's
 own privacy and retention rules apply.
@@ -39,8 +37,8 @@ hand-over.
 
 ## Microphone
 
-`getUserMedia` is called only when mic mixing is enabled, and only while a capture runs. Chrome
-records it into the same clip; the raw microphone stream is not stored or sent separately.
+`getUserMedia` is called when a capture starts, and only while a capture runs. Chrome records it
+into the same recording; the raw microphone stream is not stored or sent separately.
 
 ## Consent
 
