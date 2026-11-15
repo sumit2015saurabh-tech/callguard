@@ -5,8 +5,9 @@
      1. played back through the speakers (tab capture mutes the tab, so without this the call goes silent),
      2. optionally mixed with the microphone (recording only — the mic is never played back),
      3. recorded as one continuous file from capture start to stop — voice activity detection only
-        drives the live meter (or, with the whole-call file switched off, a clip per utterance), and
-     4. scored for clarity, so an unusable clip is visible instead of silently useless.
+        drives the live meter (or, with the whole-call file switched off, a clip per utterance),
+     4. handed to CallGuard in 20-second analysis parts while auto-send is on, and
+     5. scored for clarity, so an unusable clip is visible instead of silently useless.
 
    Recordings are written to IndexedDB; this document never talks to the network. */
 (() => {
@@ -27,6 +28,7 @@
     mic: null, micSrc: null, micGain: null,
     vad: null, segmenter: null, ticker: null, limit: null,
     full: null, fullChunks: [], fullStartedAt: 0, fullDone: null,
+    chunk: null, chunkTimer: null,
     seg: null, saving: new Set(), level: 0, speech: false, lastClarity: null,
   };
 
@@ -48,7 +50,8 @@
     const p = (v) => String(v).padStart(2, "0");
     const stamp = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
     const platform = S.session && S.session.platform === "whatsapp" ? "whatsapp" : "telegram";
-    return `${platform}-${stamp}-${kind === "call" ? "call" : `clip${n}`}.webm`;
+    const label = kind === "call" ? "call" : kind === "chunk" ? `part${String(n).padStart(3, "0")}` : `clip${n}`;
+    return `${platform}-${stamp}-${label}.webm`;
   }
 
   function snapshot() {
@@ -61,6 +64,9 @@
       platform: S.session ? S.session.platform : "",
       caller: S.session ? S.session.caller : null,
       clips: S.session ? S.session.clips : 0,
+      parts: S.session ? S.session.parts : 0,
+      chunkSec: (S.session && S.session.chunkSec) || 0,
+      longCallWarnSec: core.LONG_CALL_WARN_SEC,
       level: Math.round(S.level * 100) / 100,
       speech: !!S.speech,
       keepFullCall: !!(S.session && S.session.keepFullCall),
@@ -103,12 +109,16 @@
     if (!S.session) return;
     const measured = info.kind === "call" ? { clarity: null, seconds: null } : await measure(blob);
     if (!S.session) return;                       // stopped while decoding
-    const n = info.kind === "call" ? 0 : ++S.session.clips;
-    const id = `${S.session.id}-${info.kind === "call" ? "call" : String(n).padStart(3, "0")}`;
+    const n = info.kind === "call" ? 0
+      : info.kind === "chunk" ? ++S.session.parts
+      : ++S.session.clips;
+    const suffix = info.kind === "call" ? "call" : info.kind === "chunk" ? `part${String(n).padStart(3, "0")}` : String(n).padStart(3, "0");
+    const id = `${S.session.id}-${suffix}`;
     const clip = {
       id,
       sessionId: S.session.id,
       kind: info.kind,
+      part: info.kind === "chunk" ? n : 0,
       createdAt: new Date(info.startedAt).toISOString(),
       duration: Math.round((measured.seconds || info.durationSec) * 10) / 10,
       size: blob.size,
@@ -123,11 +133,16 @@
       fileName: fileName(info.startedAt, info.kind, n),
     };
     await store.addClip(clip, blob);
-    S.lastClarity = measured.clarity;
-    if (info.kind === "voice") S.session.clipSeconds += clip.duration;
+    if (info.kind === "voice") {
+      S.lastClarity = measured.clarity;
+      S.session.clipSeconds += clip.duration;
+    }
     chrome.runtime.sendMessage({
       target: "background", type: "cg:clip-added",
-      clip: { id: clip.id, kind: clip.kind, duration: clip.duration, createdAt: clip.createdAt, sessionId: clip.sessionId, clarity: clip.clarity },
+      clip: {
+        id: clip.id, kind: clip.kind, part: clip.part, duration: clip.duration,
+        createdAt: clip.createdAt, sessionId: clip.sessionId, clarity: clip.clarity,
+      },
     }).catch(() => {});
   }
 
@@ -211,6 +226,52 @@
     return true;
   }
 
+  /* ---------- analysis parts (queued to CallGuard while the call is live) ---------- */
+  /* A part is a separate MediaRecorder restarted every CHUNK_SECONDS: a timeslice alone would
+     produce fragments that can't be played or decoded on their own. The whole-call recorder keeps
+     running alongside, so the evidence file is still one continuous recording. */
+  function startPart() {
+    if (!S.dest || !S.session || !S.session.chunkSec) return null;
+    let rec;
+    try { rec = MIME ? new MediaRecorder(S.dest.stream, { mimeType: MIME }) : new MediaRecorder(S.dest.stream); }
+    catch { return null; }
+    const part = { rec, startedAt: Date.now(), chunks: [], finish: null };
+    part.finished = new Promise((resolve) => { part.finish = resolve; });
+    rec.ondataavailable = (e) => { if (e.data && e.data.size) part.chunks.push(e.data); };
+    rec.onstop = () => {
+      const blob = new Blob(part.chunks, { type: S.mime });
+      part.chunks = [];
+      const durationSec = Math.max(0.2, (Date.now() - part.startedAt) / 1000);
+      if (blob.size > 1200) saveClip(blob, { kind: "chunk", startedAt: part.startedAt, durationSec });
+      part.finish();
+    };
+    try { rec.start(1000); } catch { return null; }
+    S.chunk = part;
+    return part;
+  }
+
+  /** Close the current part and open the next one, so parts stay contiguous. */
+  function rotatePart() {
+    const part = S.chunk;
+    S.chunk = null;
+    if (part) {
+      if (part.rec.state === "inactive") part.finish();
+      else { try { part.rec.stop(); } catch { part.finish(); } }
+    }
+    startPart();
+  }
+
+  function stopParts() {
+    clearInterval(S.chunkTimer);
+    S.chunkTimer = null;
+    const part = S.chunk;
+    S.chunk = null;
+    if (!part) return Promise.resolve();
+    if (part.rec.state === "inactive") { part.finish(); return part.finished; }
+    try { part.rec.stop(); } catch { part.finish(); }
+    return part.finished;
+  }
+
   /* ---------- microphone (recording only, never to the speakers) ---------- */
   async function openMic() {
     try {
@@ -286,6 +347,10 @@
       micError: "",
       clips: 0,
       clipSeconds: 0,
+      parts: 0,
+      /* Parts exist only when their destination is on: auto-send, and a whole-call recording that
+         they belong to. With auto-send off nothing is queued, so nothing is cut up. */
+      chunkSec: settings.autoSend && settings.keepFullCall !== false ? core.CHUNK_SECONDS : 0,
     };
 
     const track = stream.getAudioTracks()[0];
@@ -297,6 +362,10 @@
        single file, so a capture never shows up as a series of short clips. */
     if (S.session.keepFullCall && !startFull()) {
       throw new Error("The recorder didn't start in this browser. Stop other recordings and try again.");
+    }
+    if (S.session.chunkSec) {
+      S.chunkTimer = setInterval(rotatePart, S.session.chunkSec * 1000);
+      startPart();
     }
     startVad();
     S.ticker = setInterval(publish, 500);
@@ -316,6 +385,7 @@
       ? closeSegment({ startedAt: S.seg.startedAt, endedAt: Date.now(), loudMs: cur ? cur.loudMs : core.SEGMENT_DEFAULTS.minSpeechMs })
       : null;
     if (seg) await seg.finished;
+    await stopParts();
     if (S.full && S.full.state !== "inactive") {
       try { S.full.stop(); } catch { /* already stopping */ }
       if (S.fullDone) await S.fullDone;
@@ -329,7 +399,8 @@
     try { await S.ctx.close(); } catch { /* ignore */ }
 
     S.session = null; S.stream = null; S.ctx = null; S.src = null; S.analyser = null; S.dest = null;
-    S.full = null; S.fullChunks = []; S.fullDone = null; S.seg = null; S.level = 0; S.speech = false;
+    S.full = null; S.fullChunks = []; S.fullDone = null; S.seg = null; S.chunk = null;
+    S.chunkTimer = null; S.level = 0; S.speech = false;
     S.segmenter = null;
 
     chrome.runtime.sendMessage({ target: "background", type: "cg:stopped", reason: done.reason, clips: done.clips }).catch(() => {});

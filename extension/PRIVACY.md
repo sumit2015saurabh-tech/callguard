@@ -7,15 +7,18 @@ CallGuard dashboard you are signed in to. This page describes exactly what that 
 
 - Audio of the Telegram tab, from the moment you press **Capture this call** until you press
   **Stop** (or the call ends, when automatic stop is on). It is saved as one continuous recording
-  per capture, or as separate short clips when the whole-call file is switched off.
+  per capture, or as separate short clips when the whole-call file is switched off. With
+  *Send to CallGuard automatically* on, that same audio is also cut into 20-second parts and queued
+  for the dashboard, one request at a time.
 - Your microphone, **only** if you turn on *Mix my microphone into the recording*. It is mixed into
   the recording and never played back. The setting is off by default.
 
 ## Where the audio is stored
 
 In this browser, on this device: the extension's own IndexedDB, which Chrome isolates per
-extension. Recording stops storing anything as soon as the capture ends. You can play, download or
-delete each clip in the popup, and uninstalling the extension removes the store.
+extension. Recording stops storing anything as soon as the capture ends, and a 20-second part is deleted from
+the extension as soon as CallGuard accepts it. You can play, download or delete each recording in
+the popup, and uninstalling the extension removes the store.
 
 ## What leaves the device, and when
 

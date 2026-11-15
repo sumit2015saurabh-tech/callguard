@@ -23,6 +23,12 @@
   const SENSITIVITIES = Object.freeze(["low", "medium", "high"]);
   const THRESHOLDS = Object.freeze({ low: 0.03, medium: 0.015, high: 0.008 });
 
+  /* A live call is handed to CallGuard in 20-second parts: one request per part always stays well
+     inside the microservice's 120 s / 12 MB limit, and the call dock warns the user once the call
+     has been running for LONG_CALL_WARN_SEC. */
+  const CHUNK_SECONDS = 20;
+  const LONG_CALL_WARN_SEC = 300;
+
   /* One VAD frame is 100 ms; a clip closes after 900 ms of quiet and is split at 40 s so it
      stays well inside the microservice's 120 s limit. */
   const SEGMENT_DEFAULTS = Object.freeze({
@@ -91,7 +97,8 @@
   function cleanCaller(raw) {
     const src = raw && typeof raw === "object" ? raw : {};
     const name = String(src.name == null ? "" : src.name).replace(/\s+/g, " ").trim().slice(0, CALLER_MAX);
-    const digits = String(src.number == null ? "" : src.number).replace(/[^\d+]/g, "");
+    let digits = String(src.number == null ? "" : src.number).replace(/[^\d+]/g, "");
+    if (digits.startsWith("00")) digits = `+${digits.slice(2)}`;   // 00 91 … is +91 …
     const number = (
       digits.startsWith("+") ? `+${digits.slice(1).replace(/\+/g, "")}` : digits.replace(/\+/g, "")
     ).slice(0, NUMBER_MAX);
@@ -100,7 +107,8 @@
       name,
       number,
       platform,
-      label: name && number ? `${name} · ${number}` : (name || number),
+      /* The caller ID is the number that called; the saved contact name is only extra context. */
+      label: number ? (name ? `${number} · ${name}` : number) : name,
     };
   }
 
@@ -249,6 +257,8 @@
     SENSITIVITIES,
     THRESHOLDS,
     SEGMENT_DEFAULTS,
+    CHUNK_SECONDS,
+    LONG_CALL_WARN_SEC,
     PLATFORMS,
     normaliseDashboardUrl,
     platformFor,

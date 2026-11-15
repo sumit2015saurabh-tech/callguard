@@ -96,9 +96,10 @@ test("caller: identities are trimmed, capped and labelled", () => {
   assert.equal(c.name, "Asha Rao");
   assert.equal(c.number, "+919876543210");
   assert.equal(c.platform, "whatsapp");
-  assert.equal(c.label, "Asha Rao · +919876543210");
+  assert.equal(c.label, "+919876543210 · Asha Rao", "the calling number leads the caller ID");
 
   assert.equal(cleanCaller({ number: "9876543210" }).label, "9876543210");
+  assert.equal(cleanCaller({ name: "Asha Rao", number: "00 91 98765 43210" }).label, "+919876543210 · Asha Rao");
   assert.equal(cleanCaller({ name: "Unknown" }).label, "Unknown");
   assert.equal(cleanCaller({ name: "Unknown", platform: "signal" }).platform, "", "unknown platforms are dropped");
   assert.deepEqual(cleanCaller(null), { name: "", number: "", platform: "", label: "" });

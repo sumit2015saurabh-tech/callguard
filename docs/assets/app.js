@@ -439,7 +439,9 @@ function buildRecord({ token, createdAt, fileName, audioType, tr, cls, source, c
     category: code, categoryName: c.name, isFraud: code !== "F0", isBanking: !!c.banking, risk: tr.risk || c.risk, decision: tr.decision || "",
     confidence: cls.confidence != null ? Number(cls.confidence) : null, scores: cls.scores || null, classifiedBy: cls.by,
     source, channel: CHANNELS[channel] ? channel : "phone",
-    callerName, callerNumber, callerId: callerName && callerNumber ? `${callerName} · ${callerNumber}` : (callerName || callerNumber),
+    callerName, callerNumber,
+    /* The caller ID is the number that called; the contact name is shown after it. */
+    callerId: callerNumber ? (callerName ? `${callerNumber} · ${callerName}` : callerNumber) : callerName,
     labels: tr.labels || [], userLabels: [], notifications: [], reviewed: false, hasAudio: false,
   };
   return rec;

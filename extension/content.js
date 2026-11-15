@@ -2,7 +2,7 @@
 
    On web.telegram.org and web.whatsapp.com it shows a small dock that captures the live call
    (the audio itself is recorded by the offscreen document; this only drives it), and reads the
-   caller's name/number off the call screen so the dashboard knows who called and from where.
+   caller's phone number (and name) off the call screen so the dashboard knows who called and from where.
 
    On the CallGuard dashboard it is a bridge: it receives a captured clip from the service
    worker and posts it into the page, because only page code can save a call to the dashboard's
@@ -39,11 +39,23 @@
     return s;
   }
 
+  /** A phone number in text, reduced to digits (leading + kept), or "" when it isn't plausible. */
+  function phoneOf(text) {
+    const raw = String(text == null ? "" : text).replace(/[\u200e\u200f\u202a-\u202e]/g, "").replace(/\s+/g, " ").trim();
+    if (!raw || raw.length > 60) return "";
+    const m = raw.match(/(?:\+|00)?\d[\d\s().-]{4,}\d/);
+    if (!m) return "";
+    let digits = m[0].replace(/[^\d+]/g, "");
+    if (digits.startsWith("00")) digits = `+${digits.slice(2)}`;
+    const count = digits.replace(/\D/g, "").length;
+    if (count < 7 || count > 15 || !/^\+?\d+$/.test(digits)) return "";
+    return digits;
+  }
+
   function callerFrom(text) {
     const raw = String(text == null ? "" : text).replace(/\s+/g, " ").trim();
     if (!raw || raw.length > 120) return null;
-    const num = raw.match(/\+?\d[\d\s().-]{6,}\d/);
-    const number = num ? num[0].replace(/[^\d+]/g, "") : "";
+    const number = phoneOf(raw);
     const name = tidyCallerName(raw);
     return name || number ? { name, number } : null;
   }
@@ -75,6 +87,45 @@
     }).slice(0, 12);
   }
 
+  /* Where the peer's number can live: the call screen, the open contact/profile panel, the chat
+     header. Chat bubbles are excluded so a number pasted in the conversation can't be picked up. */
+  const PHONE_SCOPES = [
+    '[data-testid="call-screen" i]', '[data-testid="call-info" i]', '[class*="call-screen" i]',
+    '[class*="call-interface" i]', '[class*="call-panel" i]', '[class*="call" i]', '[role="dialog"]',
+    '[data-testid="contact-info-drawer"]', '[class*="contact-info" i]', '[class*="profile" i]',
+    '[class*="peer-info" i]', '[class*="info-panel" i]', '#column-right', '#right-column', '.Profile',
+    '#main header', '[data-testid="conversation-info-header"]',
+  ];
+  const CHAT_BUBBLE = '[data-testid*="msg" i],[class*="message" i],[class*="bubble" i],[class*="chat-history" i]';
+
+  /** The number that is calling: a tel: link first, then the open call/contact panel. */
+  function findNumber() {
+    try {
+      for (const a of document.querySelectorAll('a[href^="tel:" i]')) {
+        if (!(a instanceof HTMLElement) || a.closest("#callguard-dock") || a.closest(CHAT_BUBBLE)) continue;
+        if (!visible(a)) continue;
+        const n = phoneOf(String(a.getAttribute("href")).replace(/^tel:/i, ""));
+        if (n) return n;
+      }
+    } catch { /* ignore */ }
+    let budget = 3000;                            // the selectors below can match a lot of nodes
+    for (const sel of PHONE_SCOPES) {
+      let scopes;
+      try { scopes = document.querySelectorAll(sel); } catch { continue; }
+      for (const scope of scopes) {
+        if (!(scope instanceof HTMLElement) || scope.closest("#callguard-dock")) continue;
+        for (const el of scope.querySelectorAll("[title],a,span,div")) {
+          if (--budget < 0) return "";
+          if (el.children.length || el.closest(CHAT_BUBBLE) || el.closest("#callguard-dock")) continue;
+          if (!visible(el)) continue;
+          const n = phoneOf(el.getAttribute("title") || el.textContent);
+          if (n) return n;
+        }
+      }
+    }
+    return "";
+  }
+
   function findCaller() {
     const texts = [];
     for (const panel of callPanels()) {
@@ -102,9 +153,14 @@
       if (!c) continue;
       if (c.name && !caller.name) caller.name = c.name;
       if (c.number && !caller.number) caller.number = c.number;
-      if (caller.name) break;
     }
-    return { ...caller, label: caller.name && caller.number ? `${caller.name} · ${caller.number}` : (caller.name || caller.number) };
+    /* The call screen often shows only the saved contact's name, so look for the calling number
+       separately and let it lead the caller ID. */
+    if (!caller.number) caller.number = findNumber();
+    return {
+      ...caller,
+      label: caller.number ? (caller.name ? `${caller.number} · ${caller.name}` : caller.number) : caller.name,
+    };
   }
 
   /* ============================ dashboard bridge ============================ */
@@ -190,6 +246,10 @@
         .hint b { color: #a32a2a; }
         .caller { color: #2f7f78; font-weight: 650; font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .caller[hidden] { display: none; }
+        .alert { border: 1px solid #f0c9c4; background: #fdf3f1; color: #8c2b22; border-radius: 10px;
+                 padding: 8px; font-size: 11.5px; line-height: 1.45; }
+        .alert[data-kind="warn"] { border-color: #edd9a8; background: #fffaf0; color: #6b5a33; }
+        .alert[hidden] { display: none; }
         .confirm { border: 1px solid #f0d9a8; background: #fffaf0; border-radius: 10px; padding: 9px; display: grid; gap: 8px; }
         .confirm p { margin: 0; font-size: 11.5px; color: #6b5a33; }
         .confirm .row { display: flex; gap: 6px; }
@@ -209,6 +269,7 @@
           <div class="head"><b id="title">Call</b><button class="x" id="close" aria-label="Close">✕</button></div>
           <div class="state" id="state">Checking…</div>
           <div class="caller" id="caller" hidden></div>
+          <div class="alert" id="alert" data-kind="fraud" hidden></div>
           <div class="meter"><span id="lvl"></span></div>
           <div class="meta"><span id="timer">0:00</span><span id="clips">0 clips</span></div>
           <button class="btn primary" id="btn">Capture this call</button>
@@ -230,6 +291,7 @@
     let confirming = false;
     let busy = false;
     let hint = "";
+    let alertShown = "";
     let consent = false;
     let caller = { name: "", number: "", label: "" };
     let callerAt = 0;
@@ -243,6 +305,12 @@
       if (!$("#panel").hidden) poll();
     };
     $("#close").onclick = () => { $("#panel").hidden = true; };
+    /* A part that came back as fraud is pushed straight from the service worker. */
+    chrome.runtime.onMessage.addListener((msg) => {
+      if (!msg || msg.type !== "cg:call-alert" || !msg.alert) return;
+      live.lastResult = msg.alert;
+      paint();
+    });
     $("#cancel").onclick = () => { confirming = false; paint(); };
     $("#agree").onclick = async () => {
       consent = true;
@@ -341,8 +409,33 @@
         ? (live.speech ? "Recording · voice detected" : "Recording · quiet")
         : (callActive ? `${name} call detected` : `No ${name} call detected`)) + mic;
       $("#caller").hidden = !caller.label;
-      $("#caller").textContent = caller.label ? `Caller: ${caller.label}` : "";
-      $("#clips").textContent = live.keepFullCall ? "one recording" : `${n} clip${n === 1 ? "" : "s"}`;
+      $("#caller").textContent = caller.label ? `Caller ID: ${caller.label}` : "";
+      $("#caller").title = caller.number ? `Calling number ${caller.number}` : "";
+      const parts = Number(live.parts || 0);
+      $("#clips").textContent = live.keepFullCall
+        ? (parts ? `one recording · ${parts} part${parts === 1 ? "" : "s"}` : "one recording")
+        : `${n} clip${n === 1 ? "" : "s"}`;
+      /* The message back to the call: a fraud part, or a call that has simply run long. */
+      const secs = on && live.startedAt ? (Date.now() - Date.parse(live.startedAt)) / 1000 : 0;
+      const warnSec = Number(live.longCallWarnSec || 300);
+      const res = live.lastResult;
+      let alertText = "";
+      let alertKind = "fraud";
+      if (on && res && res.isFraud) {
+        alertText = `CallGuard flagged part ${parts} of this call as ${res.categoryName || res.category || "fraud"}. It may be a scam — stop and verify before you share anything.`;
+      } else if (on && secs >= warnSec) {
+        alertKind = "warn";
+        alertText = `This call has run ${fmtDur(secs)}${parts ? ` · ${parts} part${parts === 1 ? "" : "s"} analyzed` : ""}. Long calls are a common scam setup: confirm who is calling and keep payment details and codes out of it.`;
+      }
+      $("#alert").hidden = !alertText;
+      $("#alert").dataset.kind = alertKind;
+      $("#alert").textContent = alertText;
+      /* The warning has to actually be seen: open the dock once per message, not on every tick. */
+      const alertKey = !alertText ? "" : (on && res && res.isFraud ? `fraud:${res.token || res.at || parts}` : "long");
+      if (alertKey && alertKey !== alertShown) {
+        alertShown = alertKey;
+        $("#panel").hidden = false;
+      }
       $("#lvl").style.width = `${Math.round((live.level || 0) * 100)}%`;
       $("#btn").textContent = on ? "Stop capture" : "Capture this call";
       $("#btn").classList.toggle("stop", on);

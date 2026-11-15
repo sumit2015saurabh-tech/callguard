@@ -33,7 +33,10 @@ function paintBadge() {
     return;
   }
   const n = Number(live.clips || 0);
-  const what = live.keepFullCall ? "one continuous recording" : `${n} voice clip${n === 1 ? "" : "s"}`;
+  const parts = Number(live.parts || 0);
+  const bits = [live.keepFullCall ? "one continuous recording" : `${n} voice clip${n === 1 ? "" : "s"}`];
+  if (parts) bits.push(`${parts} analysis part${parts === 1 ? "" : "s"}`);
+  const what = bits.join(" · ");
   chrome.action.setBadgeBackgroundColor({ color: "#c0392b" }).catch(() => {});
   chrome.action.setBadgeText({ text: live.keepFullCall ? "REC" : (n ? String(n) : "REC") }).catch(() => {});
   chrome.action.setTitle({ title: `CallGuard: capturing · ${what}${live.mic ? " · mic on" : ""}` }).catch(() => {});
@@ -126,7 +129,8 @@ async function startCapture(tabId) {
   live = {
     active: true, sessionId, tabId: tab.id, tabTitle: tab.title || `${core.platformName(platform)} call`,
     platform, caller,
-    startedAt: new Date().toISOString(), clips: 0, level: 0, speech: false,
+    startedAt: new Date().toISOString(), clips: 0, parts: 0, partsSent: 0, lastResult: null,
+    level: 0, speech: false,
     mic: !!res.mic, micError: res.micError || "",
   };
   paintBadge();
@@ -239,10 +243,37 @@ async function sendClipToDashboard(id, opts = {}) {
   return res.result || { ok: true };
 }
 
+/** A 20-second analysis part came back: remember it, and speak up in the call if it is fraud. */
+function notePartResult(result) {
+  if (!live.active) return;
+  live.lastResult = {
+    token: (result && result.token) || "",
+    category: (result && result.category) || "",
+    categoryName: (result && result.categoryName) || "",
+    isFraud: !!(result && result.isFraud),
+    at: new Date().toISOString(),
+  };
+  live.partsSent = Number(live.partsSent || 0) + 1;
+  if (!live.lastResult.isFraud || live.tabId == null) return;
+  /* The dock in the call tab shows this at once, so a warning reaches the user during the call. */
+  chrome.tabs.sendMessage(live.tabId, {
+    type: "cg:call-alert",
+    alert: { kind: "fraud", ...live.lastResult, caller: live.caller },
+  }).catch(() => {});
+}
+
 async function sendNow(id, opts = {}) {
+  const clip = await store.clip(id);
   await store.patchClip(id, { queuedAt: new Date().toISOString(), autoSkipped: "", error: "" }).catch(() => {});
   try {
     const result = await sendClipToDashboard(id, opts);
+    /* Analysis parts are transport, not recordings: once CallGuard has one it is deleted, so a
+       long call never fills the popup with a hundred 20-second rows. */
+    if (clip && clip.kind === "chunk") {
+      await store.deleteClip(id).catch(() => {});
+      notePartResult(result);
+      return { ok: true, result };
+    }
     await store.patchClip(id, { queuedAt: "", sentAt: new Date().toISOString(), result, error: "" });
     return { ok: true, result };
   } catch (e) {
@@ -264,6 +295,22 @@ async function pump() {
   try {
     while (queue.length) await sendNow(queue.shift());
   } finally { pumping = false; }
+}
+
+/** A part that failed for good is dropped at the end of the call; the whole-call file still has it. */
+async function pruneParts() {
+  const clips = await store.clips().catch(() => []);
+  for (const c of clips) {
+    if (c.kind === "chunk" && c.error && !c.queuedAt) await store.deleteClip(c.id).catch(() => {});
+  }
+}
+
+/** A service worker can be stopped mid-queue: clips marked as queued are picked up again on wake. */
+async function recoverQueue() {
+  const clips = await store.clips().catch(() => []);
+  for (const c of clips) {
+    if (c.queuedAt && !c.result) enqueue(c.id);
+  }
 }
 
 async function sendAll() {
@@ -325,6 +372,9 @@ async function runChecks() {
   } catch (e) { bridgeDetail = (e && e.message) || String(e); }
   checks.push({ name: "Dashboard bridge", ok: bridgeOk, detail: bridgeDetail });
 
+  checks.push({ name: "Long-call queue", ok: true, detail: settings.autoSend
+    ? `${core.CHUNK_SECONDS}s parts, one request at a time, call warning after ${Math.round(core.LONG_CALL_WARN_SEC / 60)} min`
+    : `idle until auto-send is on (${core.CHUNK_SECONDS}s parts)` });
   checks.push({ name: "Microphone mixing", ok: true, detail: settings.includeMic ? `on (gain 0.8) — Chrome asks once` : "off (optional)" });
   checks.push({ name: "Clarity gate", ok: true, detail: settings.skipUnclear ? "poor clips are not auto-sent" : "off — every clip is auto-sent" });
 
@@ -345,6 +395,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     live = { active: false };
     paintBadge();
     chrome.offscreen.closeDocument().catch(() => {});
+    pruneParts().catch(() => {});
     return;
   }
   if (msg.type === "cg:caller") {
@@ -359,6 +410,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       if (!msg.clip) return;
       const settings = await getSettings();
       if (!settings.autoSend) return;
+      if (msg.clip.kind === "chunk") {
+        /* A part that is nearly all silence has nothing to transcribe: drop it locally instead of
+           spending a request on it. Everything else is queued, in order. */
+        const clarity = msg.clip.clarity;
+        if (clarity && clarity.verdict === "poor" && (clarity.reasons || []).includes("mostly silence")) {
+          await store.deleteClip(msg.clip.id).catch(() => {});
+          return;
+        }
+        enqueue(msg.clip.id);
+        return;
+      }
       /* A clip too unclear to transcribe is kept locally, not auto-sent. Manual send still works. */
       if (settings.skipUnclear !== false && msg.clip.clarity && msg.clip.clarity.verdict === "poor") {
         await store.patchClip(msg.clip.id, { autoSkipped: new Date().toISOString() });
@@ -418,3 +480,6 @@ chrome.runtime.onInstalled.addListener(async () => {
   await chrome.storage.local.set({ cgSettings: await getSettings() });
   paintBadge();
 });
+
+/* Picks up anything the previous worker left queued (a 20 s part can outlive it). */
+recoverQueue().catch(() => {});

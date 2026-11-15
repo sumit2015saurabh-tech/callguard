@@ -74,7 +74,10 @@
     $("#liveTitle").textContent = on ? (live.speech ? "Recording · voice detected" : "Recording · quiet") : "Not capturing";
     $("#timer").textContent = fmtDur(on && live.startedAt ? (Date.now() - Date.parse(live.startedAt)) / 1000 : 0);
     $("#level").style.width = `${Math.round((live.level || 0) * 100)}%`;
-    $("#clipCount").textContent = live.keepFullCall ? "single recording" : `${n} clip${n === 1 ? "" : "s"}`;
+    const parts = Number(live.parts || 0);
+    $("#clipCount").textContent = live.keepFullCall
+      ? (parts ? `single · ${parts} part${parts === 1 ? "" : "s"}` : "single recording")
+      : `${n} clip${n === 1 ? "" : "s"}`;
     const mic = live.mic ? " · mic mixed" : "";
     const caller = live.caller && live.caller.label ? ` · caller ${live.caller.label}` : "";
     $("#liveInfo").textContent = on
@@ -89,8 +92,11 @@
   }
 
   async function renderClips() {
-    try { clips = (await store.clips()).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))); }
-    catch { clips = []; }
+    try {
+      /* 20-second analysis parts are sent and deleted behind the scenes: list recordings only. */
+      clips = (await store.clips()).filter((c) => c.kind !== "chunk")
+        .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+    } catch { clips = []; }
     const sig = clips.map((c) => `${c.id}:${c.result ? c.result.token || "r" : ""}:${c.queuedAt || ""}:${c.error || ""}:${c.autoSkipped || ""}`).join("|");
     if (sig === signature) return;
     signature = sig;

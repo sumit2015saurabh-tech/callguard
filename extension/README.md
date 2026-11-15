@@ -47,13 +47,16 @@ itself a few seconds after the call UI disappears.
 
 ## Caller ID and source of call
 
-The dock reads the contact name (and phone number, when WhatsApp shows one for an unsaved
-contact) from the call screen, and labels the capture with the platform — Telegram or WhatsApp.
-Both travel with every clip to the dashboard, which shows them on the result card, in the
-history table and its **Source of call** filter, in the call detail drawer and in CSV/JSON
-exports. Reading the caller is best effort: WhatsApp generates its own class names, so the
-extension falls back to the visible call panel and then the open chat's header. If it can't find
-a name it records the clip with the source and an empty caller ID rather than guessing.
+The dock records the **number that is calling** as the caller ID, with the contact name shown
+after it. It looks at a `tel:` link first, then the call screen, the open contact/profile panel
+and the chat header, and keeps the strongest number it finds (7–15 digits, leading `+` kept).
+The call's source — Telegram or WhatsApp — is labelled at the same time. Both travel with every
+recording to the dashboard, which shows them on the result card, in the history table and its
+**Source of call** filter, in the call detail drawer and in CSV/JSON exports. Reading the caller
+is best effort: WhatsApp generates its own class names, so the extension falls back to the
+visible call panel and then the open chat's header. If it can't find a number it keeps the name,
+and if it finds neither it records the recording with the source and an empty caller ID rather
+than guessing.
 
 ## What is recorded
 
@@ -62,9 +65,13 @@ a name it records the clip with the source and an empty caller ID rather than gu
 - Your own voice too, when **Mix my microphone into the recording** is on (Settings). The mic is
   mixed in at 0.8 gain so the caller stays dominant, and it is **only** sent to the recorder — never
   played back through the speakers, which would cause feedback in the call.
-- The whole-call file is never split: one file spans the capture from start to stop. The microservice
-  accepts at most 120 seconds per request, so a longer call must be trimmed (or captured as short
-  clips) before it can be analyzed; it can always be downloaded.
+- The whole-call file is never split: one file spans the capture from start to stop. It stays in the
+  browser unless you send it, and the microservice accepts at most 120 seconds per request, so the
+  file itself has to be trimmed before it can be analyzed; it can always be downloaded.
+- While *Send to CallGuard automatically* is on, the same audio is also cut into **20-second parts**
+  that are queued and handed to the dashboard **one at a time**, in order. A long call is therefore
+  analyzed while it happens, every request stays far inside the 120-second limit, and each part is
+  deleted as soon as CallGuard accepts it — the popup still shows a single recording.
 
 Everything is stored in the extension's IndexedDB on this device. Nothing is uploaded by the
 extension itself: a clip only leaves the browser when you send it to CallGuard, and CallGuard
@@ -93,12 +100,29 @@ runs on the actual recorded audio, so mic mixing and tab volume are reflected in
 | Setting | Default | What it does |
 |---|---|---|
 | CallGuard dashboard URL | the public dashboard | Where recordings are handed over. Another host asks for site access the first time. |
-| Send to CallGuard automatically | off | Hands each recording over as soon as it is ready (queued, one at a time). |
+| Send to CallGuard automatically | off | Hands each recording over as soon as it is ready; a live call goes in 20-second parts (queued, one at a time). |
 | Record the whole call as one continuous file | on | One `…-call.webm` per capture. Uncheck for a short clip per utterance. |
 | Stop when the call ends | on | Ends the capture shortly after the call UI disappears. |
 | Mix my microphone into the recording | off | Adds your own voice to every clip (recording only). |
 | Don't auto-send clips with poor clarity | on | Keeps quiet or clipped clips locally until you send them. |
 | Voice detection sensitivity | medium | Lower thresholds pick up quieter speech; raise it in a noisy room. |
+
+## Long calls
+
+A live call is never handed over as one request. With auto-send on, the recorder closes a part every
+20 seconds, saves it, and puts it in the queue; the service worker keeps one part in flight,
+retries while the dashboard is busy, and deletes a part once CallGuard has it. A service worker that
+Chrome unloads mid-queue resumes from the parts still marked as queued. Parts carry the same source,
+caller and timestamps as the recording, so they appear in history in call order as
+`…-part003.webm`.
+
+While a capture runs, the dock in WhatsApp/Telegram shows the part count. After five minutes it
+posts a warning inside the call page, and if any part comes back as fraud it says so immediately
+with the category. This message is for you, in your own page: nothing is sent to the other party.
+
+Returning to the popup's list: parts are a transport detail and are **not** listed as clips — the
+call stays one recording. Turn auto-send on **before** starting a capture; the setting is read when
+the capture starts.
 
 The toolbar badge shows `REC` while capturing (or the clip count when you record a clip per
 utterance), and `GO` if Chrome wants the capture started from the icon (see below).
@@ -202,9 +226,14 @@ before a call starts.
 - **The call goes silent while capturing?** That means the captured audio isn't being played back;
   stop and start the capture again. Do not mute the Telegram or WhatsApp tab: muting the tab mutes
   the capture.
-- **Caller ID is empty?** The call screen showed no readable contact name when the capture started
-  (WhatsApp's markup is generated, and group calls have no single caller). The clip is still saved
-  with its source; the caller ID can be supplied when analysing an upload in the dashboard.
+- **Caller ID is empty?** Neither the call screen nor a visible `tel:` link / contact panel showed
+  a number when the capture started. WhatsApp hides the number for saved contacts (it shows the
+  name only), and group calls have no single caller; open the contact's info panel once and its
+  number is picked up on the next capture. The recording is still saved with its source, and the
+  caller ID can be supplied when analysing an upload in the dashboard.
+- **Long call, nothing in history yet?** Auto-send must be on when the capture starts. Parts are
+  queued one at a time, so a busy dashboard lags behind the call instead of dropping anything, and
+  a part that is nearly all silence is skipped instead of wasting a request.
 - **“Log in to CallGuard…”** The dashboard tab is on the login screen. Log in, then send again.
 - **“CallGuard is busy with another call.”** The dashboard runs one pipeline at a time; the
   extension retries a few times and otherwise leaves the clip in the list for a later send.

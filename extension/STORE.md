@@ -29,7 +29,10 @@ WHAT IT DOES
 - One click captures the call's audio, keeps the call audible, and records it as one continuous file.
 - Every clip is scored for clarity, so quiet, clipped or mostly-silent recordings are flagged
   instead of wasting an analysis.
-- Send recordings to CallGuard as they happen, or all at once afterwards.
+- Send recordings to CallGuard as they happen — a live call goes in 20-second parts through a
+  queue, one request at a time — or all at once afterwards.
+- Warns you inside the call when it has been running for five minutes, and immediately if a part of
+  it came back as fraud.
 - Optional: mix in your own microphone, record a short clip per utterance instead of one file, and
   stop automatically when the call ends.
 
