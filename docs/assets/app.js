@@ -533,7 +533,7 @@ function planAlerts(rec, C = S.contacts) {
   return out.filter((n) => { if (n.channel !== "email" || !n.to) return true; const k = n.to.toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true; });
 }
 
-async function dispatchAlerts(rec) {
+async function dispatchAlerts(rec, { quiet = false } = {}) {
   for (const n of rec.notifications) {
     if (n.status !== "pending") continue;
     try {
@@ -543,7 +543,8 @@ async function dispatchAlerts(rec) {
   }
   const emails = rec.notifications.filter((n) => n.channel === "email" && n.to);
   const sent = emails.filter((n) => n.status === "sent").length, bad = emails.filter((n) => n.status === "failed");
-  if (rec.isFraud && emails.length) {
+  if (quiet) { /* summary shown by the caller */ }
+  else if (rec.isFraud && emails.length) {
     if (bad.length) toast(`Fraud alert: ${sent} email${sent === 1 ? "" : "s"} sent, ${bad.length} failed (${bad[0].to}: ${bad[0].reason || "error"}). See Alerts.`, "alert");
     else if (sent) toast(`Fraud alert emailed to ${emails.filter((n) => n.status === "sent").map((n) => n.to).join(", ")}`, "alert");
   } else if (rec.isFraud) toast("Fraud call, but no one to email: add a nominee / emergency contact email in Contacts.", "alert");
@@ -2085,6 +2086,28 @@ async function startApp(user, fresh = false) {
   paintChrome();
   route();
   if (fresh) toast(`Welcome, ${user.name.split(" ")[0]}`, "shield");
+  setTimeout(() => sendStuckAlerts().catch(() => {}), 3000);
+}
+
+/* Busy = analysing or recording: the update check (index.html) waits instead of reloading the page. */
+window.CG_BUSY = () => !!((S.run && S.run.running) || recorder.active());
+
+/** Fraud-alert emails from the last 24 hours still waiting in the outbox (for example, made by an older
+    version of this page that couldn't send email) are sent now. Older ones stay for "Send now". */
+async function sendStuckAlerts() {
+  if (!notifyUrl()) return;
+  const since = Date.now() - 24 * 3600 * 1000;
+  let sent = 0, failed = 0;
+  for (const rec of S.calls) {
+    if (!rec.isFraud || new Date(rec.createdAt).getTime() < since) continue;
+    const stuck = (rec.notifications || []).filter((n) => n.channel === "email" && n.to && n.status === "queued" && !n.reason);
+    if (!stuck.length) continue;
+    stuck.forEach((n) => { n.status = "pending"; });
+    await dispatchAlerts(rec, { quiet: true });
+    sent += stuck.filter((n) => n.status === "sent").length; failed += stuck.filter((n) => n.status === "failed").length;
+    await saveRecord(rec, null);
+  }
+  if (sent || failed) { toast(`Sent ${sent} fraud-alert email${sent === 1 ? "" : "s"} that were waiting${failed ? `; ${failed} failed (see Alerts)` : ""}.`, failed ? "alert" : "check"); route(); }
 }
 
 async function boot() {
