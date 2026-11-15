@@ -191,6 +191,10 @@ function normalise(raw) {
   const risk = { high: "high", medium: "medium", low: "low", safe: "low" }[lvl];
   let conf = pick("confidence", "score", "probability", "prob");
   if (conf != null) { conf = Number(conf); if (conf > 1) conf /= 100; }
+  // The scam classifier sends "risk_score:0-100" inside classes (the transcription API forwards only
+  // classes + summary). It is a weighted rule/LLM/classifier score, NOT a probability -> shown as "Risk score".
+  let riskScore = kv.risk_score != null ? Number(kv.risk_score) : Number(pick("risk_score"));
+  riskScore = Number.isFinite(riskScore) ? Math.max(0, Math.min(100, Math.round(riskScore))) : null;
   return {
     transcript: pick("transcript", "text", "transcription") || "",
     summary: pick("summary", "call_summary", "abstract") || "",
@@ -199,7 +203,7 @@ function normalise(raw) {
     token: pick("token", "call_token", "call_id", "id"),
     tokens: pick("tokens", "token_count", "num_tokens"),
     category, risk, decision,
-    confidence: conf,
+    confidence: conf, riskScore,
     scores: pick("scores", "probabilities"),
     labels: toLabels(pick("labels", "tags", "call_labels", "classes")),
   };
@@ -362,7 +366,7 @@ const services = {
 function warningText(rec) {
   const c = CATS[rec.category];
   return [
-    `CallGuard flagged a call as ${rec.category} · ${c.name} (${rec.risk} risk${rec.confidence != null ? `, ${pct(rec.confidence)} confidence` : ""}).`,
+    `CallGuard flagged a call as ${rec.category} · ${c.name} (${rec.risk} risk${scoreText(rec) ? `, ${scoreText(rec)}` : ""}).`,
     "",
     `When: ${new Date(rec.createdAt).toLocaleString()}`,
     `Call token: ${rec.token}`,
@@ -444,6 +448,7 @@ function buildRecord({ token, createdAt, fileName, audioType, tr, cls, source, c
     serviceToken: tr.token && tr.token !== token ? String(tr.token) : "",
     category: code, categoryName: c.name, isFraud: code !== "F0", isBanking: !!c.banking, risk: tr.risk || c.risk, decision: tr.decision || "",
     confidence: cls.confidence != null ? Number(cls.confidence) : null, scores: cls.scores || null, classifiedBy: cls.by,
+    riskScore: tr.riskScore != null ? Number(tr.riskScore) : null,
     source, channel: CHANNELS[channel] ? channel : "phone",
     callerName, callerNumber, callerHandle,
     /* The caller ID is the number that called (or the platform ID); the contact name is shown after it. */
@@ -504,10 +509,10 @@ const folder = {
 };
 
 function toCSV(rows) {
-  const cols = ["token", "date", "time", "source", "caller_id", "category", "category_name", "verdict", "risk", "confidence", "duration_sec", "tokens", "labels", "alerts_sent", "summary"];
+  const cols = ["token", "date", "time", "source", "caller_id", "category", "category_name", "verdict", "risk", "confidence", "risk_score", "duration_sec", "tokens", "labels", "alerts_sent", "summary"];
   const q = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
   return [cols.join(","), ...rows.map((r) => [r.token, localDate(r.createdAt), localTime(r.createdAt), channelName(r), callerIdOf(r), r.category, r.categoryName,
-    r.isFraud ? "fraud" : "not fraud", r.risk, r.confidence ?? "", r.duration ?? "", r.tokens ?? "",
+    r.isFraud ? "fraud" : "not fraud", r.risk, r.confidence ?? "", r.riskScore ?? "", r.duration ?? "", r.tokens ?? "",
     r.labels.join("|"), r.notifications.filter((n) => ["sent", "delivered", "queued"].includes(n.status)).length, r.summary].map(q).join(","))].join("\n");
 }
 
@@ -529,6 +534,11 @@ const labelChips = (rec) => rec.labels.length
   ? rec.labels.map((l) => `<span class="chip chip-label">${icon("tag")}${esc(l)}</span>`).join("")
   : `<span class="faint">No labels from the microservice.</span>`;
 const confBar = (c) => c == null ? `<span class="faint">–</span>` : `<span class="conf"><span class="bar"><span style="width:${Math.round(c * 100)}%"></span></span><span class="mono">${pct(c)}</span></span>`;
+/* Risk score 0-100 from the classifier (not a probability); falls back to a confidence value if a service sends one. */
+const scoreBar = (rec) => rec.riskScore == null ? confBar(rec.confidence)
+  : `<span class="conf"><span class="bar"><span style="width:${rec.riskScore}%"></span></span><span class="mono">${rec.riskScore}/100</span></span>`;
+const scoreText = (rec) => rec.riskScore != null ? `risk score ${rec.riskScore}/100` : rec.confidence != null ? `${pct(rec.confidence)} confidence` : "";
+const scoreValue = (rec) => rec.riskScore != null ? rec.riskScore : rec.confidence != null ? rec.confidence * 100 : -1;
 const alertCount = (rec) => rec.notifications.filter((n) => ["sent", "delivered", "queued"].includes(n.status)).length;
 
 const notifStatus = (n) => ({
@@ -910,7 +920,7 @@ async function runPipeline(blob, fileName, opts = {}) {
     set("transcribe", "done", [tr.transcript ? `${(tr.transcript.match(/\S+/g) || []).length} words` : "", tr.summary ? "summary received" : "no summary", tr.labels.length ? `${tr.labels.length} labels` : ""].filter(Boolean).join(" · "));
     cur = "classify";
     const cls = { category: tr.category, confidence: tr.confidence, scores: tr.scores, by: "microservice" };
-    set("classify", "done", `${cls.category} · ${CATS[cls.category].name}${cls.confidence != null ? ` (${pct(cls.confidence)})` : ""}`);
+    set("classify", "done", `${cls.category} · ${CATS[cls.category].name}${tr.riskScore != null ? ` (risk score ${tr.riskScore}/100)` : cls.confidence != null ? ` (${pct(cls.confidence)})` : ""}`);
     cur = "label"; set("label", "active");
     const rec = buildRecord({ token, createdAt, fileName, audioType: blob.type, tr, cls, source: opts.source || "microservice", channel: opts.channel, caller: opts.caller });
     rec.notifications = planAlerts(rec);
@@ -956,7 +966,7 @@ function resultCard(rec) {
     <dl class="kv">
       <div><dt>Date</dt><dd>${fmtDT(rec.createdAt)}</dd></div>
       <div><dt>Token</dt><dd class="mono" title="${esc(rec.token)}">${esc(rec.token)}</dd></div>
-      <div><dt>Confidence</dt><dd>${confBar(rec.confidence)}</dd></div>
+      <div><dt>Risk score</dt><dd>${scoreBar(rec)}</dd></div>
       <div><dt>Source of call</dt><dd>${esc(channelName(rec))}</dd></div>
       <div><dt>Caller ID</dt><dd>${esc(callerIdOf(rec) || "–")}</dd></div>
       <div><dt>Duration · words</dt><dd>${fmtDur(rec.duration)} · ${rec.tokens ?? "–"}</dd></div>
@@ -1018,7 +1028,7 @@ function applyFilters(F) {
     return true;
   });
   const by = { new: (a, b) => b.createdAt.localeCompare(a.createdAt), old: (a, b) => a.createdAt.localeCompare(b.createdAt),
-    conf: (a, b) => (b.confidence ?? -1) - (a.confidence ?? -1), risk: (a, b) => ({ high: 0, medium: 1, low: 2 }[a.risk] - { high: 0, medium: 1, low: 2 }[b.risk]) || b.createdAt.localeCompare(a.createdAt) };
+    conf: (a, b) => scoreValue(b) - scoreValue(a), risk: (a, b) => ({ high: 0, medium: 1, low: 2 }[a.risk] - { high: 0, medium: 1, low: 2 }[b.risk]) || b.createdAt.localeCompare(a.createdAt) };
   return rows.sort(by[F.sort] || by.new);
 }
 
@@ -1035,7 +1045,7 @@ VIEWS.history = (root) => {
           <div class="field"><label for="ftf">From time</label><input type="time" class="input" id="ftf" value="${esc(F.tFrom)}"></div>
           <div class="field"><label for="ftt">To time</label><input type="time" class="input" id="ftt" value="${esc(F.tTo)}"></div>
           <div class="field"><label for="fsort">Sort</label><select class="input" id="fsort">
-            ${[["new", "Newest first"], ["old", "Oldest first"], ["risk", "Highest risk"], ["conf", "Highest confidence"]].map(([v, t]) => `<option value="${v}" ${F.sort === v ? "selected" : ""}>${t}</option>`).join("")}</select></div>
+            ${[["new", "Newest first"], ["old", "Oldest first"], ["risk", "Highest risk"], ["conf", "Highest risk score"]].map(([v, t]) => `<option value="${v}" ${F.sort === v ? "selected" : ""}>${t}</option>`).join("")}</select></div>
         </div>
         <div class="f-row" style="grid-template-columns:repeat(5,minmax(0,1fr)) 2fr">
           <div class="field"><label for="fchannel">Source of call</label><select class="input" id="fchannel">
@@ -1062,7 +1072,7 @@ VIEWS.history = (root) => {
         ${folder.supported ? `<button class="btn btn-sm btn-soft" id="syncDir">${icon("folder")}${S.dir ? "Sync to folder" : "Save to a folder"}</button>` : ""}
       </div>
       <div class="table-wrap"><table class="tbl"><thead><tr>
-        <th>Date</th><th>Time</th><th>Source</th><th>Caller</th><th>Token</th><th>Type</th><th>Verdict</th><th>Risk</th><th>Confidence</th><th>Labels</th><th class="num">Alerts</th>
+        <th>Date</th><th>Time</th><th>Source</th><th>Caller</th><th>Token</th><th>Type</th><th>Verdict</th><th>Risk</th><th>Risk score</th><th>Labels</th><th class="num">Alerts</th>
       </tr></thead><tbody id="rows"></tbody></table></div>
     </div>`;
 
@@ -1075,7 +1085,7 @@ VIEWS.history = (root) => {
       <td class="nowrap">${fmtDate(c.createdAt)}</td><td class="mono">${localTime(c.createdAt)}</td>
       <td>${channelChip(c)}</td><td>${callerIdOf(c) ? esc(callerIdOf(c)) : `<span class="faint">–</span>`}</td>
       <td class="mono nowrap">${esc(c.token)}</td><td>${catChip(c.category)}</td><td>${verdictBadge(c)}</td><td>${riskBadge(c.risk)}</td>
-      <td style="min-width:120px">${confBar(c.confidence)}</td>
+      <td style="min-width:120px">${scoreBar(c)}</td>
       <td>${(() => { const ls = c.labels;
         return ls.length ? `<div class="labels">${ls.slice(0, 2).map((l) => `<span class="chip chip-label">${esc(l)}</span>`).join("")}${ls.length > 2 ? `<span class="chip" title="${esc(ls.slice(2).join(", "))}">+${ls.length - 2}</span>` : ""}</div>` : `<span class="faint">–</span>`; })()}</td>
       <td class="num">${alertCount(c) || `<span class="faint">0</span>`}</td></tr>`).join("")
@@ -1115,7 +1125,7 @@ async function openDrawer(id) {
           <div class="muted" style="margin-top:8px">${esc(CATS[rec.category].advice)}</div></div></div>
         <dl class="kv">
           <div><dt>Date</dt><dd>${fmtDate(rec.createdAt)}</dd></div><div><dt>Time</dt><dd>${localTime(rec.createdAt)}</dd></div>
-          <div><dt>Confidence</dt><dd>${confBar(rec.confidence)}</dd></div><div><dt>Duration</dt><dd>${fmtDur(rec.duration)}</dd></div>
+          <div><dt>Risk score</dt><dd>${scoreBar(rec)}</dd></div><div><dt>Duration</dt><dd>${fmtDur(rec.duration)}</dd></div>
           <div><dt>Words / tokens</dt><dd>${rec.tokens ?? "–"}</dd></div><div><dt>Source of call</dt><dd>${esc(channelName(rec))}</dd></div>
           <div><dt>Caller ID</dt><dd>${esc(callerIdOf(rec) || "–")}</dd></div><div><dt>Classified by</dt><dd>${esc(rec.classifiedBy || rec.source || "–")}</dd></div>
           <div><dt>File</dt><dd title="${esc(rec.fileName)}">${esc(rec.fileName || "–")}</dd></div><div><dt>Language</dt><dd>${esc(rec.language || "–")}</dd></div>
