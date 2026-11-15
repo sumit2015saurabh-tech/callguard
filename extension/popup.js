@@ -220,7 +220,10 @@
         a.download = (clip && clip.fileName) || `${id}.webm`;
         a.click();
       } else if (act === "delete") {
-        await store.deleteClip(id).catch(() => {});
+        /* Through the service worker: it cancels a send in progress first, so a recording that is
+           "Sending…" can always be deleted (and can't be written back by the send finishing). */
+        const r = await chrome.runtime.sendMessage({ type: "cg:delete-clip", id }).catch(() => null);
+        if (!r || !r.ok) await store.deleteClip(id).catch(() => {});
         if (urls.has(id)) { URL.revokeObjectURL(urls.get(id)); urls.delete(id); }
         signature = "";
         await renderClips();

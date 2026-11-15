@@ -15,6 +15,22 @@ const urgent = [];                // recordings (whole call / clips) waiting for
 const queue = [];                 // live 20-second analysis parts waiting for the dashboard
 let pumping = false;
 const STALE_PART_MS = 3 * 60 * 1000;   // a part of a call that has ended is dropped after this
+const cancelled = new Set();      // clips deleted while queued or being sent
+
+/** Delete a recording, even while it is "Sending…": cancel it, drop it from the queues, remove it, and
+    drop leftover live parts of the same call if that call has ended. */
+async function deleteClipNow(id) {
+  cancelled.add(id);
+  for (const list of [urgent, queue]) { const i = list.indexOf(id); if (i >= 0) list.splice(i, 1); }
+  const clip = await store.clip(id).catch(() => null);
+  await store.deleteClip(id);
+  if (clip && clip.sessionId && !(live.active && live.sessionId === clip.sessionId)) {
+    for (const c of await store.clips().catch(() => [])) {
+      if (c.kind === "chunk" && c.sessionId === clip.sessionId) { cancelled.add(c.id); await store.deleteClip(c.id).catch(() => {}); }
+    }
+  }
+  return { ok: true };
+}
 
 /* ---------- settings ---------- */
 async function getSettings() {
@@ -312,6 +328,7 @@ async function sendClipToDashboard(id, opts = {}) {
   if (res && res.busy) {
     if (opts.attempt && opts.attempt >= 12) throw new Error("CallGuard stayed busy, so the clip is still here. Try again.");
     await sleep(10000);
+    if (cancelled.has(id)) throw new Error("cancelled");
     return sendClipToDashboard(id, { ...opts, attempt: (opts.attempt || 0) + 1 });
   }
   if (!res || !res.ok) throw new Error((res && res.reason) || "CallGuard didn't accept the clip.");
@@ -342,6 +359,7 @@ async function sendNow(id, opts = {}) {
   await store.patchClip(id, { queuedAt: new Date().toISOString(), autoSkipped: "", skipWhy: "", error: "" }).catch(() => {});
   try {
     const result = await sendClipToDashboard(id, opts);
+    if (cancelled.has(id)) return { ok: false, reason: "deleted" };    // deleted while it was being sent
     /* Analysis parts are transport, not recordings: once CallGuard has one it is deleted, so a
        long call never fills the popup with a hundred 20-second rows. */
     if (clip && clip.kind === "chunk") {
@@ -353,7 +371,7 @@ async function sendNow(id, opts = {}) {
     return { ok: true, result };
   } catch (e) {
     const reason = (e && e.message) || String(e);
-    await store.patchClip(id, { queuedAt: "", error: reason });
+    if (!cancelled.has(id)) await store.patchClip(id, { queuedAt: "", error: reason });
     return { ok: false, reason };
   }
 }
@@ -581,6 +599,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         case "cg:check-caller":
           sendResponse(await checkCaller(msg.caller || {}));
+          break;
+        case "cg:delete-clip":
+          sendResponse(await deleteClipNow(msg.id));
           break;
         default:
           sendResponse({ ok: false, reason: "Unknown request." });
