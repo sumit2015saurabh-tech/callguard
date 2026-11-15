@@ -17,6 +17,7 @@ const {
   createSegmenter,
   analyseSamples,
   chooseMime,
+  autoSendDecision,
 } = require("../lib/core.js");
 
 /* ---------- helpers ---------- */
@@ -212,4 +213,29 @@ test("clarity: an empty buffer is handled", () => {
   assert.equal(r.score, 0);
   assert.equal(r.verdict, "poor");
   assert.ok(r.reasons.includes("no audio"));
+});
+
+test("auto-send: a mostly-silent part is dropped, other parts are queued", () => {
+  const silent = { kind: "chunk", duration: 20, clarity: { verdict: "poor", reasons: ["mostly silence"] } };
+  assert.deepEqual(autoSendDecision(silent, { skipUnclear: true }), { send: false, drop: true, skipWhy: "" });
+
+  const quiet = { kind: "chunk", duration: 20, clarity: { verdict: "poor", reasons: ["very quiet"] } };
+  assert.deepEqual(autoSendDecision(quiet, { skipUnclear: true }), { send: true, drop: false, skipWhy: "" });
+
+  const good = { kind: "chunk", duration: 20, clarity: { verdict: "good", reasons: [] } };
+  assert.deepEqual(autoSendDecision(good, {}), { send: true, drop: false, skipWhy: "" });
+});
+
+test("auto-send: a whole-call file over the dashboard's 120 s limit is kept local", () => {
+  assert.deepEqual(autoSendDecision({ kind: "call", duration: 125, clarity: null }, {}),
+    { send: false, drop: false, skipWhy: "too-long" });
+  assert.deepEqual(autoSendDecision({ kind: "call", duration: 43, clarity: null }, {}),
+    { send: true, drop: false, skipWhy: "" });
+  assert.equal(autoSendDecision({ kind: "call", duration: 120, clarity: null }, {}).send, true);
+});
+
+test("auto-send: unclear voice clips are skipped only while skipUnclear is on", () => {
+  const clip = { kind: "voice", duration: 8, clarity: { verdict: "poor", reasons: ["very quiet"] } };
+  assert.deepEqual(autoSendDecision(clip, { skipUnclear: true }), { send: false, drop: false, skipWhy: "unclear" });
+  assert.deepEqual(autoSendDecision(clip, { skipUnclear: false }), { send: true, drop: false, skipWhy: "" });
 });

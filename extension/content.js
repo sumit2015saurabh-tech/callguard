@@ -21,7 +21,11 @@
   const esc = (v) => String(v == null ? "" : v).replace(/[&<>"']/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const pad = (n) => String(n).padStart(2, "0");
-  const fmtDur = (s) => `${Math.floor(Math.max(0, s) / 60)}:${pad(Math.round(Math.max(0, s) % 60))}`;
+  /* Round once, up front: rounding only the seconds can show 0:60 or 1:60. */
+  const fmtDur = (s) => {
+    const total = Math.round(Math.max(0, Number(s) || 0));
+    return `${Math.floor(total / 60)}:${pad(total % 60)}`;
+  };
   const send = (msg) => chrome.runtime.sendMessage(msg).catch(() => null);
 
   /* ---------- caller identity (best effort, read off the call screen) ---------- */
@@ -229,10 +233,11 @@
         clearTimeout(timer);
         window.removeEventListener("message", onMessage);
       }
+      /* Analysis can run for minutes on a long recording: give the dashboard ten minutes. */
       timer = setTimeout(() => {
         cleanup();
         resolve({ ok: false, reason: "CallGuard didn't answer in time. Open the dashboard, log in, then try again." });
-      }, 90000);
+      }, 600000);
       window.addEventListener("message", onMessage);
       window.postMessage({ source: "callguard-extension", type: "import-call", requestId, clip }, location.origin);
     });
@@ -358,7 +363,7 @@
     $("#btn").onclick = async () => {
       if (live.active) {
         busy = true; paint();
-        const res = await send({ type: "cg:stop", reason: "stopped from Telegram" });
+        const res = await send({ type: "cg:stop", reason: `stopped from the ${PLATFORM_NAME[platform] || "call"} dock` });
         busy = false;
         if (res && !res.ok) hint = res.reason || "Couldn't stop the capture.";
         await poll();

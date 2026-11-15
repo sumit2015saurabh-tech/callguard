@@ -192,7 +192,13 @@ async function waitForComplete(tabId) {
 async function findOrOpenDashboard(base, focus) {
   const pattern = new URL(base).origin + "/*";
   let tab = null;
-  try { tab = (await chrome.tabs.query({ url: pattern }))[0] || null; } catch { /* no access */ }
+  try {
+    /* Prefer a tab on the dashboard's own path: another page on the same origin (or the root of a
+       localhost server) would take the relay but never answer the import. */
+    const path = new URL(base).pathname;
+    const tabs = await chrome.tabs.query({ url: pattern });
+    tab = tabs.find((t) => { try { return new URL(t.url || "").pathname.startsWith(path); } catch { return false; } }) || tabs[0] || null;
+  } catch { /* no access */ }
   if (tab) {
     if (focus) await chrome.tabs.update(tab.id, { active: true }).catch(() => {});
   } else {
@@ -241,7 +247,7 @@ async function sendClipToDashboard(id, opts = {}) {
     clip: {
       id: clip.id,
       fileName: clip.fileName || `${clip.id}.webm`,
-      mime: "audio/webm",
+      mime: clip.mime || "audio/webm",
       capturedAt: clip.createdAt,
       duration: clip.duration,
       tabTitle: clip.tabTitle || "",
@@ -252,8 +258,8 @@ async function sendClipToDashboard(id, opts = {}) {
   }).catch((e) => ({ ok: false, reason: (e && e.message) || String(e) }));
 
   if (res && res.busy) {
-    if (opts.attempt && opts.attempt >= 6) throw new Error("CallGuard stayed busy, so the clip is still here. Try again.");
-    await sleep(5000);
+    if (opts.attempt && opts.attempt >= 12) throw new Error("CallGuard stayed busy, so the clip is still here. Try again.");
+    await sleep(10000);
     return sendClipToDashboard(id, { ...opts, attempt: (opts.attempt || 0) + 1 });
   }
   if (!res || !res.ok) throw new Error((res && res.reason) || "CallGuard didn't accept the clip.");
@@ -281,7 +287,7 @@ function notePartResult(result) {
 
 async function sendNow(id, opts = {}) {
   const clip = await store.clip(id);
-  await store.patchClip(id, { queuedAt: new Date().toISOString(), autoSkipped: "", error: "" }).catch(() => {});
+  await store.patchClip(id, { queuedAt: new Date().toISOString(), autoSkipped: "", skipWhy: "", error: "" }).catch(() => {});
   try {
     const result = await sendClipToDashboard(id, opts);
     /* Analysis parts are transport, not recordings: once CallGuard has one it is deleted, so a
@@ -291,7 +297,7 @@ async function sendNow(id, opts = {}) {
       notePartResult(result);
       return { ok: true, result };
     }
-    await store.patchClip(id, { queuedAt: "", sentAt: new Date().toISOString(), result, error: "" });
+    await store.patchClip(id, { queuedAt: "", sentAt: new Date().toISOString(), result, error: "", skipWhy: "" });
     return { ok: true, result };
   } catch (e) {
     const reason = (e && e.message) || String(e);
@@ -332,9 +338,10 @@ async function recoverQueue() {
 
 async function sendAll() {
   /* Recordings only: a 20-second analysis part is transport, never listed, and a part that failed
-     is dropped when the call ends — the whole-call file still has its audio. */
+     is dropped when the call ends — the whole-call file still has its audio. Whole-call files
+     longer than the dashboard's 120 s limit stay local (their parts were analyzed live). */
   const clips = (await store.clips())
-    .filter((c) => c.kind !== "chunk" && !c.result && !c.queuedAt)
+    .filter((c) => c.kind !== "chunk" && !c.result && !c.queuedAt && c.skipWhy !== "too-long")
     .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
   for (const c of clips) await enqueue(c.id);
   return { ok: true, queued: clips.length };
@@ -381,10 +388,12 @@ async function runChecks() {
   let bridgeDetail = "";
   try {
     const base = core.normaliseDashboardUrl(settings.dashboardUrl);
+    const path = new URL(base).pathname;
     const tabs = await chrome.tabs.query({ url: new URL(base).origin + "/*" });
-    if (!tabs.length) bridgeDetail = "open the dashboard once, logged in";
+    const tab = tabs.find((t) => { try { return new URL(t.url || "").pathname.startsWith(path); } catch { return false; } }) || tabs[0];
+    if (!tab) bridgeDetail = "open the dashboard once, logged in";
     else {
-      const r = await chrome.tabs.sendMessage(tabs[0].id, { type: "cg:ping" }).catch(() => null);
+      const r = await chrome.tabs.sendMessage(tab.id, { type: "cg:ping" }).catch(() => null);
       bridgeOk = !!(r && r.ok);
       bridgeDetail = bridgeOk ? "ready to receive clips" : "reload the dashboard tab";
     }
@@ -437,20 +446,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       if (!msg.clip) return;
       const settings = await getSettings();
       if (!settings.autoSend) return;
-      if (msg.clip.kind === "chunk") {
-        /* A part that is nearly all silence has nothing to transcribe: drop it locally instead of
-           spending a request on it. Everything else is queued, in order. */
-        const clarity = msg.clip.clarity;
-        if (clarity && clarity.verdict === "poor" && (clarity.reasons || []).includes("mostly silence")) {
-          await store.deleteClip(msg.clip.id).catch(() => {});
-          return;
-        }
-        enqueue(msg.clip.id);
-        return;
-      }
-      /* A clip too unclear to transcribe is kept locally, not auto-sent. Manual send still works. */
-      if (settings.skipUnclear !== false && msg.clip.clarity && msg.clip.clarity.verdict === "poor") {
-        await store.patchClip(msg.clip.id, { autoSkipped: new Date().toISOString() });
+      /* Pure decision (unit-tested): drop nothing-to-transcribe parts, keep unclear clips and
+         whole-call files too long for the dashboard local, queue everything else. */
+      const d = core.autoSendDecision(msg.clip, settings);
+      if (d.drop) { await store.deleteClip(msg.clip.id).catch(() => {}); return; }
+      if (!d.send) {
+        await store.patchClip(msg.clip.id, {
+          autoSkipped: d.skipWhy === "unclear" ? new Date().toISOString() : "",
+          skipWhy: d.skipWhy,
+        });
         return;
       }
       enqueue(msg.clip.id);

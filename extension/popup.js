@@ -12,12 +12,17 @@
   const esc = (v) => String(v == null ? "" : v).replace(/[&<>"']/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const pad = (n) => String(n).padStart(2, "0");
-  const fmtDur = (s) => `${Math.floor(Math.max(0, Number(s) || 0) / 60)}:${pad(Math.round(Math.max(0, Number(s) || 0) % 60))}`;
+  /* Round once, up front: rounding only the seconds can show 0:60 or 1:60. */
+  const fmtDur = (s) => {
+    const total = Math.round(Math.max(0, Number(s) || 0));
+    return `${Math.floor(total / 60)}:${pad(total % 60)}`;
+  };
   const kb = (n) => (Number(n) > 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round((Number(n) || 0) / 1024))} KB`);
   const clock = (iso) => new Date(iso).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
   const isCallTab = (tab) => !!tab && core.isCallUrl(tab.url);
-  /* CallGuard has not received this recording yet: never analyzed and not already in the queue. */
-  const isUnsent = (c) => !c.result && !c.queuedAt;
+  /* CallGuard has not received this recording yet: never analyzed and not already in the queue.
+     A whole-call file longer than the dashboard's 120 s limit is kept local, not "unsent". */
+  const isUnsent = (c) => !c.result && !c.queuedAt && c.skipWhy !== "too-long";
 
   let live = { active: false };
   let settings = { dashboardUrl: DASH };
@@ -25,6 +30,7 @@
   let callTabs = [];
   let clips = [];
   let signature = "";
+  let renderSeq = 0;
   const urls = new Map();
   let toastTimer = 0;
 
@@ -85,7 +91,7 @@
         .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
     } catch { clips = []; }
     paintUnsent(clips.filter(isUnsent).length);
-    const sig = clips.map((c) => `${c.id}:${c.result ? c.result.token || "r" : ""}:${c.queuedAt || ""}:${c.error || ""}:${c.autoSkipped || ""}`).join("|");
+    const sig = clips.map((c) => `${c.id}:${c.result ? c.result.token || "r" : ""}:${c.queuedAt || ""}:${c.error || ""}:${c.autoSkipped || ""}:${c.skipWhy || ""}`).join("|");
     if (sig === signature) return;
     signature = sig;
     const list = $("#clips");
@@ -111,6 +117,8 @@
     li.className = "clip";
     li.dataset.id = c.id;
     const st = clipStatus(c);
+    /* Already analyzed, or too long to analyze at all: open the dashboard instead of re-sending. */
+    const openInstead = !!(c.result || c.skipWhy === "too-long");
     const clarity = c.clarity
       ? `<div class="sub">Clarity ${c.clarity.score}/100 · ${esc(c.clarity.verdict)}${c.clarity.reasons.length ? ` (${esc(c.clarity.reasons.join(", "))})` : ""}</div>`
       : "";
@@ -122,9 +130,9 @@
       ${c.result ? `<div class="sub">${esc(resultLine(c.result))}</div>` : ""}
       ${c.error ? `<div class="sub err">${esc(c.error)}</div>` : ""}
       ${clarity}
-      <audio controls preload="none"></audio>
+      <audio controls preload="metadata"></audio>
       <div class="actions">
-        <button class="btn sm" data-act="send">Analyze in CallGuard</button>
+        ${c.queuedAt ? "" : `<button class="btn sm" data-act="${openInstead ? "open" : "send"}" title="${openInstead ? "Open CallGuard" : "Analyze this recording in CallGuard"}">${openInstead ? "Open CallGuard" : "Analyze"}</button>`}
         <button class="btn sm" data-act="download">Download</button>
         <button class="btn sm ghost" data-act="delete">Delete</button>
       </div>`;
@@ -141,6 +149,7 @@
         : { cls: "good", text: c.result.category || "Saved" };
     }
     if (c.queuedAt) return { cls: "warn", text: "Sending…" };
+    if (c.skipWhy === "too-long") return { cls: "warn", text: "Too long · in parts" };
     if (c.autoSkipped) return { cls: "warn", text: "Unclear · not sent" };
     if (c.error) return { cls: "bad", text: "Not sent" };
     return { cls: "", text: "Local only" };
@@ -178,6 +187,10 @@
       const id = li && li.dataset.id;
       if (!id) return;
       const act = btn.dataset.act;
+      if (act === "open") {
+        chrome.tabs.create({ url: settings.dashboardUrl || DASH });
+        return;
+      }
       if (act === "send") {
         btn.disabled = true;
         btn.textContent = "Sending…";
@@ -211,7 +224,11 @@
       toast(r && r.ok ? "Capture stopped." : (r && r.reason) || "Couldn't stop the capture.");
     } else {
       const target = isCallTab(activeTab) ? activeTab : callTabs[0];
-      if (!target) { toast("Open a Telegram or WhatsApp call first."); return; }
+      if (!target) {
+        toast("Open a Telegram or WhatsApp call first.");
+        btn.disabled = false;                        // nothing to start, but keep the button usable
+        return;
+      }
       const r = await send({ type: "cg:start", tabId: target.id });
       if (r && r.ok) {
         toast(r.micError ? "Capturing, but the microphone wasn't available." : "Capturing this call.");

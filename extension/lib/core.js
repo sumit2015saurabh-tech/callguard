@@ -41,6 +41,10 @@
   const CHUNK_SECONDS = 20;
   const LONG_CALL_WARN_SEC = 300;
 
+  /* The dashboard rejects any single file longer than 120 s, so a whole-call recording longer than
+     that is never auto-sent: its 20 s parts were already analyzed during the call. */
+  const MAX_ANALYZE_SEC = 120;
+
   /* One VAD frame is 100 ms; a clip closes after 900 ms of quiet and is split at 40 s so it
      stays well inside the microservice's 120 s limit. */
   const SEGMENT_DEFAULTS = Object.freeze({
@@ -260,6 +264,20 @@
     };
   }
 
+  /** Whether a finished clip should be handed to CallGuard automatically: { send, drop, skipWhy }.
+   *  drop = delete locally (nothing to transcribe); skipWhy = keep local, manual send still works. */
+  function autoSendDecision(clip, settings) {
+    const poor = !!(clip && clip.clarity && clip.clarity.verdict === "poor");
+    if (clip && clip.kind === "chunk") {
+      /* A part that is nearly all silence has nothing to transcribe: don't spend a request on it. */
+      if (poor && (clip.clarity.reasons || []).includes("mostly silence")) return { send: false, drop: true, skipWhy: "" };
+      return { send: true, drop: false, skipWhy: "" };
+    }
+    if (clip && Number(clip.duration) > MAX_ANALYZE_SEC) return { send: false, drop: false, skipWhy: "too-long" };
+    if (poor && !(settings && settings.skipUnclear === false)) return { send: false, drop: false, skipWhy: "unclear" };
+    return { send: true, drop: false, skipWhy: "" };
+  }
+
   /** First recording type the browser supports, or "" for the browser default. */
   function chooseMime(candidates, isSupported) {
     const list = Array.isArray(candidates) ? candidates : [];
@@ -291,5 +309,7 @@
     createSegmenter,
     analyseSamples,
     chooseMime,
+    MAX_ANALYZE_SEC,
+    autoSendDecision,
   };
 });

@@ -382,7 +382,7 @@ if (!/<div class="auth-wrap" id="auth"(?![^>]*\bhidden\b)[^>]*>/.test(html)) {
 if (!/<div class="app" id="appRoot"[^>]*\bhidden\b/.test(html)) {
   errors.push("app shell (#appRoot) should stay hidden until login");
 }
-if (html.indexOf("auth-card") < 0) errors.push("no login card in the DOM");
+if (html.indexOf("auth-pane") < 0) errors.push("no login card in the DOM");
 
 let log = "";
 try { log = fs.readFileSync(path.join(dir, "chrome.log"), "utf8"); } catch { /* optional */ }

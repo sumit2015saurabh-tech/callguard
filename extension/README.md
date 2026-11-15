@@ -33,11 +33,12 @@ it to the Chrome Web Store.
    from the moment you press capture until you stop.
 4. The recording is listed in the popup with playback, download and delete. Press
    **Analyze in CallGuard**, or **Send unsent** for everything, and the dashboard opens, analyzes it
-   and saves it to history with a token and the usual alerts. The microservice accepts at most
-   120 seconds per request, so a whole-call file longer than that must be trimmed (or captured as
-   short clips) before it can be analyzed; it can always be downloaded.
+   and saves it to history with a token and the usual alerts.
 5. Auto-send is always on: each recording is handed over as soon as it is ready — 20-second parts
-   while the call is live, the whole-call file when you stop — so alerts fire without waiting.
+   while the call is live, the whole-call file when you stop — so alerts fire without waiting. The
+   microservice accepts at most 120 seconds per request, so a whole-call file longer than that is
+   not sent; the popup marks it **Too long · in parts** because its 20-second parts were already
+   analyzed live during the call. The file stays local for playback and download.
 
 **Stop** from the dock or the popup. A capture also ends by itself a few seconds after the call UI
 disappears.
