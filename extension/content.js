@@ -329,6 +329,11 @@
         .alert.flagged { border: 2px solid #c0392b; background: #fdecea; color: #7a1f17; font-size: 12px; }
         .alert.flagged b { display: block; font-size: 12.5px; margin-bottom: 2px; }
         .hint[hidden] { display: none; }
+        .after { border: 1px solid #cfe3df; background: #f2f8f7; border-radius: 10px; padding: 9px; display: grid; gap: 7px; }
+        .after[hidden] { display: none; }
+        .after[data-kind="fraud"] { border-color: #e7b3ac; background: #fdecea; }
+        .after-text { font-size: 12px; font-weight: 600; color: #16302d; }
+        .after[data-kind="fraud"] .after-text { color: #7a1f17; }
         .confirm { border: 1px solid #f0d9a8; background: #fffaf0; border-radius: 10px; padding: 9px; display: grid; gap: 8px; }
         .confirm p { margin: 0; font-size: 11.5px; color: #6b5a33; }
         .confirm .row { display: flex; gap: 6px; }
@@ -353,6 +358,10 @@
           <div class="alert" id="alert" data-kind="fraud" hidden></div>
           <div class="meter"><span id="lvl"></span></div>
           <div class="meta"><span id="timer">0:00</span><span id="clips">0 clips</span></div>
+          <div class="after" id="after" hidden>
+            <div class="after-text" id="afterText"></div>
+            <button class="btn primary" id="afterBtn">Analyze this call</button>
+          </div>
           <button class="btn primary" id="btn">Capture this call</button>
           <div class="confirm" id="confirm" hidden>
             <p>Recording a call can need everyone's consent. Make sure everyone on the call agrees before you start.</p>
@@ -377,6 +386,31 @@
     let caller = { name: "", number: "", label: "" };
     let callerAt = 0;
     let flagged = null;         // shared fraud-caller list result for the current caller
+    let lastCall = null;        // newest whole-call recording (after a capture): { id, skipWhy, sending, result, ... }
+    let lastCallAt = 0;
+    let analyzing = false;
+
+    async function refreshLastCall() {
+      if (live.active || Date.now() - lastCallAt < 2500) return;
+      lastCallAt = Date.now();
+      const r = await send({ type: "cg:last-call" });
+      lastCall = r && r.ok ? r.clip : null;
+    }
+    /* After the call: "Analyze this call" sends the recording and opens CallGuard's Analyze page so the
+       analysis can be watched; afterwards the verdict + "View analysis" (that call's full details). */
+    $("#afterBtn").onclick = async () => {
+      if (!lastCall) return;
+      if (lastCall.result && lastCall.result.token) {
+        const r = await send({ type: "cg:open-analysis", token: lastCall.result.token });
+        if (!(r && r.ok)) { hint = (r && r.reason) || "Couldn't open the analysis."; paint(); }
+        return;
+      }
+      analyzing = true; hint = ""; paint();
+      const r = await send({ type: "cg:send", clipId: lastCall.id, focus: true });
+      analyzing = false;
+      if (!(r && r.ok)) hint = (r && r.reason) || "Couldn't analyze the call.";
+      lastCallAt = 0; await refreshLastCall(); paint();
+    };
     let checkedKey = "";
     let quietCalls = 0;
 
@@ -465,10 +499,13 @@
 
     async function poll() {
       const res = await send({ type: "cg:status" });
+      const wasLive = !!live.active;
       if (res && res.ok) {
         live = res.live || { active: false };
         settings = res.settings || settings;
       }
+      if (wasLive && !live.active) { lastCallAt = 0; $("#panel").hidden = false; }   // call just stopped: show Analyze
+      if (!live.active) await refreshLastCall();
       callActive = detectCall();
       if (callActive && Date.now() - callerAt > 3000) {
         callerAt = Date.now();
@@ -524,6 +561,26 @@
       $("#callerHint").textContent = platform === "whatsapp"
         ? "Caller ID not found yet: open this person's chat in WhatsApp Web (the call screen alone often hides the number)."
         : "Caller ID not found yet: open this person's chat or profile so CallGuard can read it.";
+      /* After the call: Analyze / Analyzing… / verdict + View analysis */
+      const lc = !on ? lastCall : null;
+      const showAfter = !!(lc && (lc.skipWhy === "ready" || lc.sending || analyzing || (lc.result && lc.result.token) || lc.error));
+      $("#after").hidden = !showAfter;
+      if (showAfter) {
+        const r = lc.result;
+        const dur = fmtDur(Number(lc.duration) || 0);
+        if (r && r.token) {
+          $("#after").dataset.kind = r.isFraud ? "fraud" : "safe";
+          $("#afterText").textContent = `${r.isFraud ? "⚠ Fraud" : "✓ Not fraud"}${r.category ? ` · ${r.category}${r.categoryName ? ` ${r.categoryName}` : ""}` : ""} (call ${dur})`;
+          $("#afterBtn").textContent = "View analysis";
+          $("#afterBtn").disabled = false;
+        } else {
+          $("#after").dataset.kind = "";
+          const busyNow = analyzing || lc.sending;
+          $("#afterText").textContent = busyNow ? `Analyzing your ${dur} call in CallGuard…` : lc.error ? `Not analyzed: ${lc.error}` : `Call recorded (${dur}). Analyze it to see if it was a scam.`;
+          $("#afterBtn").textContent = busyNow ? "Analyzing…" : "Analyze this call";
+          $("#afterBtn").disabled = busyNow;
+        }
+      }
       $("#flagged").hidden = !flagged;
       if (flagged) {
         const n = Number(flagged.reports || 0);

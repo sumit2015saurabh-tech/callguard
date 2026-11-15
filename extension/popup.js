@@ -146,7 +146,7 @@
       <div class="actions">
         ${c.queuedAt ? "" : viewable
           ? `<button class="btn sm" data-act="view" title="Open this call's analysis in CallGuard">View analysis</button>`
-          : `<button class="btn sm" data-act="${openInstead ? "open" : "send"}" title="${openInstead ? "Open CallGuard" : "Analyze this recording and show the result in CallGuard"}">${openInstead ? "Open CallGuard" : "Analyze"}</button>`}
+          : `<button class="btn sm${c.skipWhy === "ready" ? " primary" : ""}" data-act="${openInstead ? "open" : "send"}" title="${openInstead ? "Open CallGuard" : "Analyze this recording and show the result in CallGuard"}">${openInstead ? "Open CallGuard" : "Analyze"}</button>`}
         <button class="btn sm" data-act="download">Download</button>
         <button class="btn sm ghost" data-act="delete">Delete</button>
       </div>`;
@@ -165,6 +165,7 @@
     if (c.queuedAt) return { cls: "warn", text: "Sending…" };
     if (c.skipWhy === "too-long") return { cls: "warn", text: "Too long · in parts" };
     if (c.skipWhy === "too-short") return { cls: "", text: "Too short · not sent" };
+    if (c.skipWhy === "ready") return { cls: "warn", text: "Ready to analyze" };
     if (c.autoSkipped) return { cls: "warn", text: "Unclear · not sent" };
     if (c.error) return { cls: "bad", text: "Not sent" };
     return { cls: "", text: "Local only" };

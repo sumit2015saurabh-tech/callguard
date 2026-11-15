@@ -230,8 +230,14 @@ test("auto-send: a whole-call file over the dashboard's 120 s limit is kept loca
   assert.deepEqual(autoSendDecision({ kind: "call", duration: 125, clarity: null }, {}),
     { send: false, drop: false, skipWhy: "too-long" });
   assert.deepEqual(autoSendDecision({ kind: "call", duration: 43, clarity: null }, {}),
-    { send: true, drop: false, skipWhy: "" });
-  assert.equal(autoSendDecision({ kind: "call", duration: 120, clarity: null }, {}).send, true);
+    { send: false, drop: false, skipWhy: "ready" });
+  assert.equal(autoSendDecision({ kind: "call", duration: 120, clarity: null }, {}).skipWhy, "ready");
+});
+
+test("auto-send: a whole-call recording waits for the user's Analyze; voice clips are still sent", () => {
+  assert.deepEqual(autoSendDecision({ kind: "call", duration: 49, clarity: null }, {}),
+    { send: false, drop: false, skipWhy: "ready" });
+  assert.equal(autoSendDecision({ kind: "voice", duration: 10, clarity: null }, {}).send, true);
 });
 
 test("auto-send: unclear voice clips are skipped only while skipUnclear is on", () => {
@@ -243,9 +249,9 @@ test("auto-send: unclear voice clips are skipped only while skipUnclear is on", 
 test("auto-send: a recording shorter than 4 s (accidental capture) is kept local, not sent", () => {
   assert.deepEqual(autoSendDecision({ kind: "call", duration: 2, clarity: null }, {}),
     { send: false, drop: false, skipWhy: "too-short" });
-  assert.equal(autoSendDecision({ kind: "call", duration: 4, clarity: null }, {}).send, true);
+  assert.equal(autoSendDecision({ kind: "call", duration: 4, clarity: null }, {}).skipWhy, "ready");
   assert.equal(autoSendDecision({ kind: "voice", duration: 3.5, clarity: null }, {}).skipWhy, "too-short");
-  // parts are judged on silence, not length; an unknown duration is still sent
+  // parts are judged on silence, not length; an unknown duration is not "too short"
   assert.equal(autoSendDecision({ kind: "chunk", duration: 2, clarity: null }, {}).send, true);
-  assert.equal(autoSendDecision({ kind: "call", clarity: null }, {}).send, true);
+  assert.equal(autoSendDecision({ kind: "call", clarity: null }, {}).skipWhy, "ready");
 });

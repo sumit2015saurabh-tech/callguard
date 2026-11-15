@@ -350,7 +350,9 @@ async function sendClipToDashboard(id, opts = {}) {
     return sendClipToDashboard(id, { ...opts, attempt: (opts.attempt || 0) + 1 });
   }
   if (!res || !res.ok) throw new Error((res && res.reason) || "CallGuard didn't accept the clip.");
-  return res.result || { ok: true };
+  /* The dashboard's answer IS the result ({ ok, token, category, categoryName, isFraud, risk, alerts });
+     older code looked for res.result and so kept only { ok: true }: no token, no verdict in the popup. */
+  return res.result || res;
 }
 
 /** A 20-second analysis part came back: remember it, and speak up in the call if it is fraud. */
@@ -645,6 +647,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case "cg:open-analysis":
           sendResponse(await openAnalysis(msg.token));
           break;
+        case "cg:last-call": {
+          /* For the call dock after a call: the newest whole-call recording of the last 30 minutes. */
+          const all = await store.clips().catch(() => []);
+          const recent = all.filter((c) => c.kind === "call" && Date.now() - Date.parse(c.createdAt || 0) < 30 * 60 * 1000)
+            .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))[0];
+          sendResponse({ ok: true, clip: recent ? {
+            id: recent.id, duration: recent.duration, createdAt: recent.createdAt, skipWhy: recent.skipWhy || "",
+            sending: !!recent.queuedAt, error: recent.error || "", result: recent.result || null,
+          } : null });
+          break;
+        }
         default:
           sendResponse({ ok: false, reason: "Unknown request." });
       }
