@@ -77,7 +77,7 @@ function makeToken(date = new Date()) {
 
 function toast(msg, kind = "check") {
   const el = document.createElement("div");
-  el.className = "toast";
+  el.className = "toast" + (kind === "alert" ? " alert" : "");
   el.innerHTML = `${icon(kind)}<span>${esc(msg)}</span>`;
   $("#toasts").appendChild(el);
   setTimeout(() => el.remove(), 3800);
@@ -628,7 +628,7 @@ function paintChrome() {
   const live = !!S.settings.transcriberUrl;
   const mp = $("#modePill");
   mp.className = `mode-pill ${live ? "live" : ""}`;
-  mp.innerHTML = live ? `<span class="dot" style="background:var(--good)"></span>Microservice connected` : `<span class="dot" style="background:var(--warning)"></span>Microservice not connected`;
+  mp.innerHTML = live ? `<span class="dot" style="background:var(--good)"></span>Microservice connected` : `<a href="#/settings" title="Add the microservice URL in Settings" style="display:inline-flex;align-items:center;gap:6px;color:inherit;text-decoration:none"><span class="dot" style="background:var(--warning)"></span>Microservice not connected</a>`;
   const plan = currentPlan(), used = monthUsage();
   $("#usageMini").innerHTML = `<div class="row" style="justify-content:space-between"><b>${esc(plan.name)} plan</b><span class="faint">${used.toLocaleString()} / ${plan.calls.toLocaleString()}</span></div>
     <div class="meter"><span style="width:${Math.min(100, (used / plan.calls) * 100)}%"></span></div>
@@ -715,8 +715,8 @@ VIEWS.overview = (root) => {
       <div class="seg" id="rangeSeg">${[7, 14, 30].map((n) => `<button data-r="${n}" class="${n === R ? "on" : ""}">${n} days</button>`).join("")}</div>
     </div>
     <div class="grid g-4">
-      <div class="card kpi"><div class="k-label"><span class="k-icon">${icon("wave")}</span>Calls analysed</div><div class="k-value">${inRange.length}</div><div class="k-foot">${inRange.filter((c) => !c.isFraud).length} not fraud</div></div>
-      <div class="card kpi"><div class="k-label"><span class="k-icon" style="background:var(--critical-soft);color:var(--critical-ink)">${icon("alert")}</span>Fraud detected</div><div class="k-value">${fraud.length}</div><div class="k-foot">${banking} banking · ${fraud.length - banking} other</div></div>
+      <div class="card kpi k-link" id="kpiCalls" title="Show all calls in history"><div class="k-label"><span class="k-icon">${icon("wave")}</span>Calls analysed</div><div class="k-value">${inRange.length}</div><div class="k-foot">${inRange.filter((c) => !c.isFraud).length} not fraud</div></div>
+      <div class="card kpi k-link" id="kpiFraud" title="Show fraud calls in history"><div class="k-label"><span class="k-icon" style="background:var(--critical-soft);color:var(--critical-ink)">${icon("alert")}</span>Fraud detected</div><div class="k-value">${fraud.length}</div><div class="k-foot">${banking} banking · ${fraud.length - banking} other</div></div>
       <div class="card kpi"><div class="k-label"><span class="k-icon" style="background:var(--lav-soft);color:#4b47a0">${icon("shield")}</span>Fraud rate</div><div class="k-value">${inRange.length ? Math.round((fraud.length / inRange.length) * 100) : 0}%</div><div class="k-foot">of analysed calls</div></div>
       <div class="card kpi"><div class="k-label"><span class="k-icon" style="background:var(--sand-soft);color:#7a5a1c">${icon("bell")}</span>Alerts sent</div><div class="k-value">${sent}</div><div class="k-foot">${used} / ${plan.calls.toLocaleString()} calls this month</div></div>
     </div>
@@ -750,6 +750,9 @@ VIEWS.overview = (root) => {
   if (fraud.length) barChart($("#barChart"), bars); else $("#barChart").innerHTML = `<div class="empty">${icon("grid")}<div>Fraud types will appear here.</div></div>`;
 
   $("#rangeSeg").onclick = (e) => { const b = e.target.closest("button"); if (b) { S.overviewRange = +b.dataset.r; route(); } };
+  const goFiltered = (patch) => { S.filters = { ...defaultFilters(), from: localDate(start), ...patch }; LS.set("filters", S.filters); location.hash = "#/history"; };
+  $("#kpiCalls").onclick = () => goFiltered({});
+  $("#kpiFraud").onclick = () => goFiltered({ verdict: "fraud" });
   $$("[data-open]", root).forEach((li) => li.onclick = () => openDrawer(li.dataset.open));
 };
 
@@ -1085,37 +1088,44 @@ function applyFilters(F) {
 VIEWS.history = (root) => {
   const F = S.filters = { ...defaultFilters(), ...(S.filters || {}) };
   const allLabels = [...new Set(S.calls.flatMap((c) => c.labels))].sort();
+  const advCount = [F.tFrom, F.tTo, F.label].filter(Boolean).length + (F.channel !== "all") + (F.verdict !== "all") + (F.risk !== "all") + (F.alerts !== "any") + (F.types.length ? 1 : 0);
   root.innerHTML = `
     <div class="card">
       <div class="filters">
-        <div class="f-row">
+        <div class="f-row fr-top">
           <div class="field f-search"><label for="fq">Search</label><input class="input" id="fq" placeholder="Token, summary, transcript, label…" value="${esc(F.q)}"></div>
           <div class="field"><label for="ffrom">From date</label><input type="date" class="input" id="ffrom" value="${esc(F.from)}"></div>
           <div class="field"><label for="fto">To date</label><input type="date" class="input" id="fto" value="${esc(F.to)}"></div>
-          <div class="field"><label for="ftf">From time</label><input type="time" class="input" id="ftf" value="${esc(F.tFrom)}"></div>
-          <div class="field"><label for="ftt">To time</label><input type="time" class="input" id="ftt" value="${esc(F.tTo)}"></div>
           <div class="field"><label for="fsort">Sort</label><select class="input" id="fsort">
             ${[["new", "Newest first"], ["old", "Oldest first"], ["risk", "Highest risk"], ["conf", "Highest risk score"]].map(([v, t]) => `<option value="${v}" ${F.sort === v ? "selected" : ""}>${t}</option>`).join("")}</select></div>
         </div>
-        <div class="f-row" style="grid-template-columns:repeat(5,minmax(0,1fr)) 2fr">
-          <div class="field"><label for="fchannel">Source of call</label><select class="input" id="fchannel">
-            ${[["all", "Any source"], ...Object.entries(CHANNELS)].map(([v, t]) => `<option value="${v}" ${F.channel === v ? "selected" : ""}>${t}</option>`).join("")}</select></div>
-          <div class="field"><label for="fverdict">Verdict</label><select class="input" id="fverdict">
-            ${[["all", "All calls"], ["fraud", "Fraud only"], ["safe", "Not fraud only"], ["banking", "Banking fraud"]].map(([v, t]) => `<option value="${v}" ${F.verdict === v ? "selected" : ""}>${t}</option>`).join("")}</select></div>
-          <div class="field"><label for="frisk">Risk</label><select class="input" id="frisk">
-            ${["all", "high", "medium", "low"].map((v) => `<option value="${v}" ${F.risk === v ? "selected" : ""}>${v === "all" ? "Any risk" : v[0].toUpperCase() + v.slice(1)}</option>`).join("")}</select></div>
-          <div class="field"><label for="flabel">Label</label><select class="input" id="flabel"><option value="">Any label</option>
-            ${allLabels.map((l) => `<option ${F.label === l ? "selected" : ""}>${esc(l)}</option>`).join("")}</select></div>
-          <div class="field"><label for="falerts">Alerts</label><select class="input" id="falerts">
-            ${[["any", "Any"], ["alerted", "Alerts sent"], ["problem", "Needs attention"]].map(([v, t]) => `<option value="${v}" ${F.alerts === v ? "selected" : ""}>${t}</option>`).join("")}</select></div>
+        <div class="adv" id="advBody" ${advCount ? "" : "hidden"}>
+          <div class="f-row fr-adv1">
+            <div class="field"><label for="ftf">From time</label><input type="time" class="input" id="ftf" value="${esc(F.tFrom)}"></div>
+            <div class="field"><label for="ftt">To time</label><input type="time" class="input" id="ftt" value="${esc(F.tTo)}"></div>
+            <div class="field"><label for="fchannel">Source of call</label><select class="input" id="fchannel">
+              ${[["all", "Any source"], ...Object.entries(CHANNELS)].map(([v, t]) => `<option value="${v}" ${F.channel === v ? "selected" : ""}>${t}</option>`).join("")}</select></div>
+          </div>
+          <div class="f-row fr-adv2">
+            <div class="field"><label for="fverdict">Verdict</label><select class="input" id="fverdict">
+              ${[["all", "All calls"], ["fraud", "Fraud only"], ["safe", "Not fraud only"], ["banking", "Banking fraud"]].map(([v, t]) => `<option value="${v}" ${F.verdict === v ? "selected" : ""}>${t}</option>`).join("")}</select></div>
+            <div class="field"><label for="frisk">Risk</label><select class="input" id="frisk">
+              ${["all", "high", "medium", "low"].map((v) => `<option value="${v}" ${F.risk === v ? "selected" : ""}>${v === "all" ? "Any risk" : v[0].toUpperCase() + v.slice(1)}</option>`).join("")}</select></div>
+            <div class="field"><label for="flabel">Label</label><select class="input" id="flabel"><option value="">Any label</option>
+              ${allLabels.map((l) => `<option ${F.label === l ? "selected" : ""}>${esc(l)}</option>`).join("")}</select></div>
+            <div class="field"><label for="falerts">Alerts</label><select class="input" id="falerts">
+              ${[["any", "Any"], ["alerted", "Alerts sent"], ["problem", "Needs attention"]].map(([v, t]) => `<option value="${v}" ${F.alerts === v ? "selected" : ""}>${t}</option>`).join("")}</select></div>
+          </div>
           <div class="field"><span class="lbl">Quick range</span><div class="row" style="gap:6px">
             ${[["today", "Today"], ["7", "7 days"], ["30", "30 days"], ["all", "All time"]].map(([v, t]) => `<button class="chip-toggle" data-quick="${v}">${t}</button>`).join("")}</div></div>
+          <div class="field"><span class="lbl">Fraud type</span><div class="f-types" style="margin-top:6px">
+            ${CODES.map((c) => `<button class="chip-toggle ${F.types.includes(c) ? "on" : ""}" data-type="${c}" title="${esc(CATS[c].name)}">${c} · ${esc(CATS[c].name.split(" /")[0])}</button>`).join("")}</div></div>
         </div>
-        <div><span class="lbl">Fraud type</span><div class="f-types" style="margin-top:6px">
-          ${CODES.map((c) => `<button class="chip-toggle ${F.types.includes(c) ? "on" : ""}" data-type="${c}" title="${esc(CATS[c].name)}">${c} · ${esc(CATS[c].name.split(" /")[0])}</button>`).join("")}</div></div>
       </div>
       <div class="result-bar">
-        <b id="resCount"></b><span class="faint" id="resSub"></span><div class="spacer"></div>
+        <b id="resCount"></b><span class="faint" id="resSub"></span>
+        <button class="btn btn-sm ${advCount ? "btn-soft" : "btn-ghost"}" id="advToggle">${icon("chev")}More filters${advCount ? ` <span class="chip">${advCount}</span>` : ""}</button>
+        <div class="spacer"></div>
         <button class="btn btn-sm btn-ghost" id="resetF">Reset filters</button>
         <button class="btn btn-sm" id="expCsv">${icon("download")}CSV</button>
         <button class="btn btn-sm" id="expJson">${icon("download")}JSON</button>
@@ -1139,7 +1149,7 @@ VIEWS.history = (root) => {
       <td>${(() => { const ls = c.labels;
         return ls.length ? `<div class="labels">${ls.slice(0, 2).map((l) => `<span class="chip chip-label">${esc(l)}</span>`).join("")}${ls.length > 2 ? `<span class="chip" title="${esc(ls.slice(2).join(", "))}">+${ls.length - 2}</span>` : ""}</div>` : `<span class="faint">–</span>`; })()}</td>
       <td class="num">${alertCount(c) || `<span class="faint">0</span>`}</td></tr>`).join("")
-      : `<tr><td colspan="11"><div class="empty">${icon("clock")}<div>${S.calls.length ? "No calls match these filters." : "No calls yet. Analyse one to start your history."}</div></div></td></tr>`;
+      : `<tr><td colspan="11"><div class="empty">${icon("clock")}<div>${S.calls.length ? "No calls match these filters." : "No calls yet."}</div>${S.calls.length ? "" : `<div class="row" style="justify-content:center;margin-top:12px"><a class="btn btn-primary btn-sm" href="#/analyze">${icon("wave")}Analyze your first call</a></div>`}</div></td></tr>`;
     $$("#rows [data-open]").forEach((tr) => tr.onclick = () => openDrawer(tr.dataset.open));
     return rows;
   };
@@ -1152,6 +1162,7 @@ VIEWS.history = (root) => {
     F.from = v === "all" ? "" : v === "today" ? localDate(new Date()) : localDate(daysAgo(+v - 1));
     $("#ffrom").value = F.from; $("#fto").value = F.to; paint();
   });
+  $("#advToggle").onclick = () => { const b = $("#advBody"); b.hidden = !b.hidden; $("#advToggle").classList.toggle("btn-soft", !b.hidden); $("#advToggle").classList.toggle("btn-ghost", b.hidden); };
   $("#resetF").onclick = () => { S.filters = defaultFilters(); route(); };
   $("#expCsv").onclick = () => download(`callguard-history-${localDate(new Date())}.csv`, toCSV(paint()), "text/csv");
   $("#expJson").onclick = () => download(`callguard-history-${localDate(new Date())}.json`, JSON.stringify(paint(), null, 2), "application/json");
@@ -1738,9 +1749,22 @@ function authScreen(mode = "login", note = "") {
   box.hidden = false; $("#appRoot").hidden = true;
   document.title = mode === "login" ? "Log in · CallGuard" : "Sign up · CallGuard";
   box.innerHTML = `
-    <div class="auth-card card">
-      <div class="brand" style="padding:0 0 14px"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32"><rect width="32" height="32" rx="9"/><path d="M16 6l8 3v6c0 5-3.4 8.6-8 10-4.6-1.4-8-5-8-10V9z"/></svg></span>
-        <div><div class="brand-name">CallGuard</div><div class="brand-sub">Scam-call protection</div></div></div>
+    <div class="auth-cols">
+      <div class="auth-pitch">
+        <div class="brand" style="padding:0"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32"><rect width="32" height="32" rx="9"/><path d="M16 6l8 3v6c0 5-3.4 8.6-8 10-4.6-1.4-8-5-8-10V9z"/></svg></span>
+          <div><div class="brand-name">CallGuard</div><div class="brand-sub" style="color:#9fc6bf">Scam-call protection</div></div></div>
+        <h1>Know if that call is a scam — before it costs you.</h1>
+        <p>Upload or record a call and get a fraud verdict in seconds, with the right people alerted automatically.</p>
+        <div class="stack" style="gap:18px;margin-top:auto">
+          <div class="auth-feat"><span class="f-icon">${icon("shield")}</span><div><b>A verdict, not just a transcript</b><span class="f-sub">Ten scam types (F0–F9) with a risk score for every call.</span></div></div>
+          <div class="auth-feat"><span class="f-icon">${icon("bell")}</span><div><b>The right people get told</b><span class="f-sub">Your nominee for personal scams, the bank's fraud desk for banking scams, family for everything.</span></div></div>
+          <div class="auth-feat"><span class="f-icon">${icon("clock")}</span><div><b>A history you own</b><span class="f-sub">Summary, transcript, audio and alerts for every call — exportable any time.</span></div></div>
+        </div>
+        <div style="font-size:12px;color:#8fb8b1">Works with phone calls, plus Telegram &amp; WhatsApp Web calls via the CallGuard Chrome extension.</div>
+      </div>
+      <div class="auth-pane">
+        <div class="brand auth-brand-sm" style="padding:0 0 14px"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32"><rect width="32" height="32" rx="9"/><path d="M16 6l8 3v6c0 5-3.4 8.6-8 10-4.6-1.4-8-5-8-10V9z"/></svg></span>
+          <div><div class="brand-name">CallGuard</div><div class="brand-sub">Scam-call protection</div></div></div>
       <h2>${mode === "login" ? "Welcome back" : "Create your account"}</h2>
       <p class="muted" style="margin:4px 0 16px">${mode === "login" ? "Continue with your Google account, or log in with your user ID and password." : "Sign up in one tap with the Google account on this device, or register a user ID."}</p>
       ${note ? `<div class="banner" style="margin-bottom:14px">${icon("check")}<div>${note}</div></div>` : ""}
@@ -1766,6 +1790,7 @@ function authScreen(mode = "login", note = "") {
         ? `New to CallGuard? <a href="#" data-mode="signup">Sign up</a>`
         : `Already have an account? <a href="#" data-mode="login">Log in</a>`}</div>
       <div class="faint" style="font-size:12px;margin-top:14px;text-align:center">${cloud.on ? "Your account is stored securely on our sign-in server. Your call history stays private in this browser." : "Your call history is stored privately in this browser on this device."}</div>
+      </div>
     </div>`;
   $$("[data-mode]", box).forEach((a) => a.onclick = (e) => { e.preventDefault(); authScreen(a.dataset.mode); });
   const err = (m) => { const e = $("#authErr"); e.hidden = !m; e.innerHTML = m ? `${icon("alert")}<div>${esc(m)}</div>` : ""; };
