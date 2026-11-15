@@ -802,7 +802,7 @@ VIEWS.analyze = (root) => {
             <div class="field"><label for="aCallerName">Caller name (optional)</label>
               <input class="input" id="aCallerName" maxlength="80" placeholder="e.g. Asha Rao" autocomplete="off"></div>
             <div class="field"><label for="aCallerNumber" id="aCallerLbl">Caller number (optional)</label>
-              <input class="input" id="aCallerNumber" maxlength="40" placeholder="+91 98765 43210" autocomplete="off"></div>
+              <input class="input" id="aCallerNumber" maxlength="40" placeholder="+1 (555) 123-4567" autocomplete="off"></div>
           </div>
           <div class="row" style="margin-top:16px">
             <button class="btn btn-primary" id="analyzeBtn">${icon("wave")}Analyze call</button>
@@ -850,8 +850,8 @@ VIEWS.analyze = (root) => {
 
   /* The caller box asks for what that platform uses: a number, or a Telegram username / ID. */
   const CALLER_HINT = {
-    phone: ["Caller number (optional)", "+91 98765 43210"],
-    whatsapp: ["WhatsApp number (optional)", "+91 98765 43210"],
+    phone: ["Caller number (optional)", "+1 (555) 123-4567"],
+    whatsapp: ["WhatsApp number (optional)", "+1 (555) 123-4567"],
     telegram: ["Telegram number, @username or ID (optional)", "@username or 123456789"],
   };
   const paintSource = () => { const [l, ph] = CALLER_HINT[$("#aSource").value] || CALLER_HINT.phone; $("#aCallerLbl").textContent = l; $("#aCallerNumber").placeholder = ph; };
