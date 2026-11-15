@@ -474,17 +474,28 @@ const services = {
 /* ============================== labels + routing ============================== */
 function warningText(rec) {
   const c = CATS[rec.category];
+  const U = S.contacts.user || {};
+  const holder = [U.name || S.user?.name, U.email || S.user?.email, U.phone].filter(Boolean).join(" · ") || "a CallGuard user";
+  const d = new Date(rec.createdAt);
+  let tz = ""; try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || ""; } catch { /* old browser */ }
+  const when = d.toLocaleString(undefined, { weekday: "short", year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", second: "2-digit", timeZoneName: "short" });
+  const caller = [rec.callerNumber, rec.callerHandle && rec.callerHandle !== rec.callerNumber ? rec.callerHandle : "", rec.callerName ? `(${rec.callerName})` : ""].filter(Boolean).join(" ") || "Unknown / hidden number";
   return [
-    `CallGuard flagged a call as ${rec.category} · ${c.name} (${rec.risk} risk${scoreText(rec) ? `, ${scoreText(rec)}` : ""}).`,
+    `FRAUD ALERT: CallGuard flagged a call to ${holder} as ${rec.category} · ${c.name}.`,
     "",
-    `When: ${new Date(rec.createdAt).toLocaleString()}`,
-    `Call token: ${rec.token}`,
+    `Risk:        ${String(rec.risk || "").toUpperCase()}${scoreText(rec) ? ` (${scoreText(rec)})` : ""}`,
+    `Caller:      ${caller}`,
+    `Call type:   ${CHANNELS[rec.channel] || "Phone call"}`,
+    `Local time:  ${when}${tz ? ` (${tz})` : ""}`,
+    `Call token:  ${rec.token}`,
     "",
-    `Summary: ${rec.summary || "(no summary returned)"}`,
+    `What happened: ${rec.summary || "(no summary returned)"}`,
     "",
-    `Warning: ${c.advice}`,
+    `Advice: ${c.advice}`,
     "",
-    "Please check on the account holder. This alert was sent automatically by CallGuard.",
+    `What to do now: call ${U.name || "the account holder"} directly on a number you already know (not the caller's). Make sure no OTP, PIN, password or payment was shared. ${rec.isBanking ? "If any bank details were shared, ask the bank to block the card / account right away." : ""}`.trim(),
+    "",
+    "This alert was sent automatically by CallGuard.",
   ].join("\n");
 }
 
@@ -494,7 +505,8 @@ const notifyUrl = () => String(S.settings.notifierUrl || window.CG_CONFIG?.notif
 function planAlerts(rec, C = S.contacts) {
   const out = [];
   if (!rec.isFraud) return out;
-  const subject = `⚠ ${rec.isBanking ? "Banking fraud" : "Fraud"} alert: ${CATS[rec.category].name} (${rec.token})`;
+  const who = [rec.callerNumber || rec.callerHandle, rec.callerName].filter(Boolean)[0];
+  const subject = `⚠ ${rec.isBanking ? "Banking fraud" : "Fraud"} alert: ${CATS[rec.category].name}${who ? ` from ${who}` : ""} (${rec.token})`;
   const body = warningText(rec);
   const add = (role, person, channel, extra = {}) => out.push({
     id: uid(), role, name: person?.name || "", to: person?.email || "", channel, subject, body,
@@ -510,11 +522,11 @@ function planAlerts(rec, C = S.contacts) {
     if (isEmail(C.bank.email)) add("Bank", { name: C.bank.name || "Bank fraud desk", email: C.bank.email }, "email");
     else add("Bank", null, "email", { reason: "No bank added yet (the nominee adds it in Contacts)." });
   }
-  // Rule 3: every fraud -> authorised people; if none, the emergency contact by default
+  // Rule 3: every fraud -> all authorised people AND the emergency contact
   const auth = (C.authorised || []).filter((a) => isEmail(a.email));
-  if (auth.length) auth.forEach((a) => add("Authorised person", a, "email"));
-  else if (isEmail(C.emergency.email)) add("Emergency contact", C.emergency, "email", { fallback: true });
-  else add("Emergency contact", null, "email", { reason: "No authorised person or emergency contact added." });
+  auth.forEach((a) => add("Authorised person", a, "email"));
+  if (isEmail(C.emergency.email)) add("Emergency contact", C.emergency, "email");
+  else if (!auth.length) add("Emergency contact", null, "email", { reason: "No authorised person or emergency contact added." });
 
   // never email the same address twice for one call
   const seen = new Set();
@@ -529,6 +541,12 @@ async function dispatchAlerts(rec) {
     } catch (e) { n.status = "failed"; n.reason = e.message; }
     n.at = new Date().toISOString();
   }
+  const emails = rec.notifications.filter((n) => n.channel === "email" && n.to);
+  const sent = emails.filter((n) => n.status === "sent").length, bad = emails.filter((n) => n.status === "failed");
+  if (rec.isFraud && emails.length) {
+    if (bad.length) toast(`Fraud alert: ${sent} email${sent === 1 ? "" : "s"} sent, ${bad.length} failed (${bad[0].to}: ${bad[0].reason || "error"}). See Alerts.`, "alert");
+    else if (sent) toast(`Fraud alert emailed to ${emails.filter((n) => n.status === "sent").map((n) => n.to).join(", ")}`, "alert");
+  } else if (rec.isFraud) toast("Fraud call, but no one to email: add a nominee / emergency contact email in Contacts.", "alert");
   if (rec.isFraud && S.settings.browserNotify && "Notification" in window && Notification.permission === "granted") {
     try { new Notification(`CallGuard: ${CATS[rec.category].name}`, { body: rec.summary || rec.token }); } catch { /* ignore */ }
   }
@@ -881,7 +899,7 @@ function routingSummary() {
     <tr><td style="width:42%">${riskBadge("low")} Not fraud (F0)</td><td>Logged with date, token and summary. No alerts.</td></tr>
     <tr><td>${icon("alert")} Every fraud (F1–F9)</td><td>Notification + email to nominee (always): ${who(isEmail(C.nominee.email) ? C.nominee : null, "No nominee email")}</td></tr>
     <tr><td>${icon("bank")} Banking fraud (F1, F2)</td><td>Also email to bank: ${who(C.bank.email ? { name: C.bank.name, email: C.bank.email } : null, "No bank added")}</td></tr>
-    <tr><td>${icon("shield")} Every fraud</td><td>${auth.length ? `Authorised: ${auth.map((a) => `<b>${esc(a.name || a.email)}</b>`).join(", ")}` : `Emergency contact (default): ${who(C.emergency, "None added")}`}</td></tr>
+    <tr><td>${icon("shield")} Every fraud</td><td>${auth.length ? `Authorised: ${auth.map((a) => `<b>${esc(a.name || a.email)}</b>`).join(", ")} · ` : ""}Emergency contact: ${who(isEmail(C.emergency.email) ? C.emergency : null, "None added")}</td></tr>
   </table>`;
 }
 
@@ -1111,7 +1129,7 @@ async function runPipeline(blob, fileName, opts = {}) {
     await dispatchAlerts(rec);
     await saveRecord(rec, null);
     const n = alertCount(rec);
-    set("alert", "done", rec.isFraud ? `${n} alert${n === 1 ? "" : "s"} ${notifyUrl() ? "sent" : "in outbox"}` : "Not fraud: no alerts needed");
+    set("alert", "done", rec.isFraud ? (() => { const e = rec.notifications.filter((x) => x.channel === "email" && x.to); const ok = e.filter((x) => x.status === "sent").length; const f = e.filter((x) => x.status === "failed").length; return e.length ? `${ok} email${ok === 1 ? "" : "s"} sent${f ? `, ${f} failed` : ""}${e.length - ok - f ? `, ${e.length - ok - f} in outbox` : ""}` : "No contacts to email (add them in Contacts)"; })() : "Not fraud: no alerts needed");
     S.run.rec = rec;
     S.pending = null; idb.kvSet("pending", null).catch(() => {});
     if ($("#filePill")) $("#filePill").innerHTML = "";
@@ -1403,7 +1421,7 @@ VIEWS.contacts = (root) => {
   };
   const nomineeReady = !!(C.nominee.name || C.nominee.email);
   root.innerHTML = `
-    <p class="section-intro">Tell CallGuard who to warn. Every fraud is emailed to your nominee and your authorised people (or your emergency contact if you have none). Banking fraud is also emailed to the bank your nominee adds.</p>
+    <p class="section-intro">Tell CallGuard who to warn. Every fraud is emailed to your nominee, your authorised people and your emergency contact. Banking fraud is also emailed to the bank your nominee adds.</p>
     <div class="grid g-2">
       <div class="card contact-card"><div class="c-head"><span class="c-icon">${icon("users")}</span><div><h3>You (account holder)</h3><div class="faint" style="font-size:12.5px">Shown in alerts so people know whose call it was</div></div></div>
         <div class="form-grid">${inp("user.name", "Full name", "text", "Your name")}${inp("user.email", "Email", "email", "you@example.com")}${inp("user.phone", "Phone", "tel", "+1 …")}</div></div>
@@ -1414,8 +1432,11 @@ VIEWS.contacts = (root) => {
         <div class="form-grid">${inp("bank.name", "Bank name", "text", "e.g. Chase", !nomineeReady)}${inp("bank.email", "Fraud-desk email", "email", "fraud@bank.com", !nomineeReady)}${inp("bank.branch", "Branch / notes", "text", "Optional", !nomineeReady)}
           <div class="field"><label>Added by</label><input class="input" disabled value="${esc(C.bank.addedBy || (nomineeReady ? C.nominee.name || C.nominee.email : "–"))}"></div></div>
         <div class="faint" style="font-size:12px;margin-top:10px">Never store account numbers here. The alert only carries the call summary and token.</div></div>
-      <div class="card contact-card"><div class="c-head"><span class="c-icon rose">${icon("alert")}</span><div><h3>Emergency contact</h3><div class="faint" style="font-size:12.5px">Default: emailed for every fraud when no authorised person is set</div></div></div>
-        <div class="form-grid">${inp("emergency.name", "Name", "text", "e.g. Rahul")}${inp("emergency.email", "Email", "email", "emergency@example.com")}${inp("emergency.phone", "Phone", "tel", "+1 …")}</div></div>
+      <div class="card contact-card"><div class="c-head"><span class="c-icon rose">${icon("alert")}</span><div><h3>Emergency contact</h3><div class="faint" style="font-size:12.5px">Emailed for every fraud call</div></div></div>
+        <div class="form-grid">${inp("emergency.name", "Name", "text", "e.g. Rahul")}${inp("emergency.email", "Email", "email", "emergency@example.com")}${inp("emergency.phone", "Phone", "tel", "+1 …")}</div>
+        <div class="row" style="margin-top:12px;gap:8px">${isEmail(C.emergency.email) ? `<span class="status good">${icon("check")}Saved: ${esc(C.emergency.email)}</span>` : `<span class="faint" style="font-size:12.5px">Not saved yet</span>`}<div class="spacer"></div>
+          <button class="btn btn-sm btn-ghost btn-danger" id="emDelete" ${C.emergency.name || C.emergency.email || C.emergency.phone ? "" : "disabled"}>${icon("trash")}Delete</button>
+          <button class="btn btn-sm btn-primary" id="emSave">${icon("check")}Save</button></div></div>
     </div>
     <div class="card contact-card" style="margin-top:18px"><div class="c-head"><span class="c-icon">${icon("shield")}</span><div><h3>Authorised people</h3><div class="faint" style="font-size:12.5px">Emailed for every fraud call, whatever the type</div></div></div>
       <div class="grid g-3" id="authList">${C.authorised.map((a) => `<div class="person"><span class="avatar">${esc(initials(a.name || a.email))}</span><div style="min-width:0;flex:1"><div style="font-weight:620">${esc(a.name || "–")}${a.relation ? ` <span class="faint">· ${esc(a.relation)}</span>` : ""}</div><div class="faint" style="font-size:12.5px;overflow:hidden;text-overflow:ellipsis">${esc(a.email)}</div></div><button class="icon-btn" data-rm="${a.id}" aria-label="Remove">${icon("x")}</button></div>`).join("") || `<div class="faint">None yet. Until you add one, the emergency contact is used.</div>`}</div>
@@ -1427,7 +1448,11 @@ VIEWS.contacts = (root) => {
     <div class="card" style="margin-top:18px"><div class="card-head"><h3>Routing preview</h3><div class="right"><button class="btn btn-sm" id="previewBtn">Preview a test alert</button></div></div>
       <div class="card-pad" style="padding-top:12px">${routingSummary()}</div></div>`;
 
-  $$("[data-path]", root).forEach((el) => el.addEventListener("change", () => {
+  /* Emergency contact: saved with its own Save button (auto-saving on blur would re-render the card
+     and swallow the click on Save). Other cards save as soon as a field changes. */
+  $$("[data-path]", root).forEach((el) => el.dataset.path.startsWith("emergency.") ? el.addEventListener("input", () => {
+    const hint = $("#emSave", root); if (hint) hint.textContent = "Save changes";
+  }) : el.addEventListener("change", () => {
     const [a, b] = el.dataset.path.split(".");
     const v = el.value.trim();
     if (el.type === "email" && v && !isEmail(v)) { toast("That email address doesn't look right", "alert"); el.focus(); return; }
@@ -1436,6 +1461,16 @@ VIEWS.contacts = (root) => {
     if (a === "bank") C.bank.addedBy = C.nominee.name || C.nominee.email;
     saveContacts(); toast("Saved"); VIEWS.contacts(root);
   }));
+  $("#emSave").onclick = () => {
+    const val = (b) => ($(`[data-path="emergency.${b}"]`, root)?.value || "").trim();
+    const e = { name: val("name"), email: val("email").toLowerCase(), phone: val("phone") };
+    if (!isEmail(e.email)) { toast("Enter a valid email for the emergency contact", "alert"); $(`[data-path="emergency.email"]`, root)?.focus(); return; }
+    C.emergency = e; saveContacts(); toast(`Emergency contact saved: ${e.email}`); VIEWS.contacts(root);
+  };
+  $("#emDelete").onclick = async () => {
+    if (!await modal({ title: "Delete the emergency contact?", body: `${esc(C.emergency.name || C.emergency.email || "This contact")} will no longer be emailed about fraud calls.`, confirm: "Delete", cancel: "Keep" })) return;
+    C.emergency = { name: "", email: "", phone: "" }; saveContacts(); toast("Emergency contact deleted"); VIEWS.contacts(root);
+  };
   $("#authForm").onsubmit = (e) => {
     e.preventDefault();
     const email = $("#aEmail").value.trim();
