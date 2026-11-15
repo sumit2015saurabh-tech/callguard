@@ -10,16 +10,47 @@ const CODES = Object.keys(CATS);
 /* Where a call came from, and who was on the other end. The extension fills both in when it
    captures a Telegram or WhatsApp Web call; uploads and recordings can set them by hand. */
 const CHANNELS = { phone: "Phone call", telegram: "Telegram", whatsapp: "WhatsApp" };
+/** WhatsApp / Telegram from the name the extension gives its files ("whatsapp-20261114-…webm"). */
+const channelFromName = (name) => { const m = String(name || "").toLowerCase().match(/^(whatsapp|telegram)[-_]/); return m ? m[1] : ""; };
 const channelOf = (rec) => {
-  if (rec && CHANNELS[rec.channel]) return rec.channel;
-  const source = String((rec && rec.source) || "");
+  if (!rec) return "phone";
+  const source = String(rec.source || "");
+  /* Calls saved before the source was recorded default to "phone"; trust stronger evidence. */
+  if (CHANNELS[rec.channel] && rec.channel !== "phone") return rec.channel;
   if (source.includes("whatsapp")) return "whatsapp";
   if (source.includes("telegram")) return "telegram";
-  return "phone";
+  if (/^(tg:|@)/.test(String(rec.callerHandle || ""))) return "telegram";
+  return channelFromName(rec.fileName) || "phone";
 };
 const channelName = (rec) => CHANNELS[channelOf(rec)];
-const channelChip = (rec) => `<span class="chip">${esc(channelName(rec))}</span>`;
-const callerIdOf = (rec) => String((rec && (rec.callerId || [rec.callerName, rec.callerNumber].filter(Boolean).join(" · "))) || "");
+const channelChip = (rec) => `<span class="chip ch-${channelOf(rec)}">${esc(channelName(rec))}</span>`;
+/** The caller's ID on that platform: phone number, Telegram user ID or @username. */
+const handleText = (h) => (/^tg:\d+$/.test(h) ? `Telegram ID ${h.slice(3)}` : h);
+const callerKeyOf = (rec) => String((rec && (rec.callerNumber || handleText(rec.callerHandle || ""))) || "");
+const callerIdOf = (rec) => {
+  if (!rec) return "";
+  const key = callerKeyOf(rec), name = rec.callerName || "";
+  if (key || name) return key ? (name ? `${key} · ${name}` : key) : name;
+  return String(rec.callerId || "");
+};
+/** "WhatsApp number" / "Telegram ID" / "Phone number", for the call details. */
+const callerKindOf = (rec) => {
+  const ch = channelOf(rec);
+  if (rec && rec.callerNumber) return ch === "phone" ? "Phone number" : `${CHANNELS[ch]} number`;
+  if (rec && rec.callerHandle) return String(rec.callerHandle).startsWith("@") ? "Telegram username" : "Telegram ID";
+  return "Caller ID";
+};
+/** Split what someone typed as the caller into a phone number or a platform ID. */
+function parseCallerInput(raw, channel) {
+  const v = String(raw || "").trim();
+  if (!v) return { number: "", handle: "" };
+  if (channel === "telegram" && /^\d{3,15}$/.test(v)) return { number: "", handle: `tg:${v}` };   // Telegram user ID
+  const digits = v.replace(/[^\d+]/g, "");
+  if (/^\+?[\d\s().-]{7,}$/.test(v) && digits.replace(/\D/g, "").length >= 7) return { number: digits, handle: "" };
+  if (/^@?[A-Za-z]\w{3,31}$/.test(v)) return { number: "", handle: v.startsWith("@") ? v : `@${v}` };
+  if (/^(tg:)?\d{3,15}$/i.test(v)) return { number: "", handle: `tg:${v.replace(/^tg:/i, "")}` };
+  return { number: "", handle: v.replace(/[^\w@:.+-]/g, "").slice(0, 40) };
+}
 
 /* ============================== utilities ============================== */
 const $ = (s, r = document) => r.querySelector(s);
@@ -767,8 +798,8 @@ VIEWS.analyze = (root) => {
               <select class="input" id="aSource">${Object.entries(CHANNELS).map(([v, t]) => `<option value="${v}">${t}</option>`).join("")}</select></div>
             <div class="field"><label for="aCallerName">Caller name (optional)</label>
               <input class="input" id="aCallerName" maxlength="80" placeholder="e.g. Asha Rao" autocomplete="off"></div>
-            <div class="field"><label for="aCallerNumber">Caller number (optional)</label>
-              <input class="input" id="aCallerNumber" maxlength="24" inputmode="tel" placeholder="+91 98765 43210" autocomplete="off"></div>
+            <div class="field"><label for="aCallerNumber" id="aCallerLbl">Caller number (optional)</label>
+              <input class="input" id="aCallerNumber" maxlength="40" placeholder="+91 98765 43210" autocomplete="off"></div>
           </div>
           <div class="row" style="margin-top:16px">
             <button class="btn btn-primary" id="analyzeBtn">${icon("wave")}Analyze call</button>
@@ -814,9 +845,22 @@ VIEWS.analyze = (root) => {
   if (recorder.active()) $("#srcSeg [data-s=record]").click();
   recorder.paint();
 
+  /* The caller box asks for what that platform uses: a number, or a Telegram username / ID. */
+  const CALLER_HINT = {
+    phone: ["Caller number (optional)", "+91 98765 43210"],
+    whatsapp: ["WhatsApp number (optional)", "+91 98765 43210"],
+    telegram: ["Telegram number, @username or ID (optional)", "@username or 123456789"],
+  };
+  const paintSource = () => { const [l, ph] = CALLER_HINT[$("#aSource").value] || CALLER_HINT.phone; $("#aCallerLbl").textContent = l; $("#aCallerNumber").placeholder = ph; };
+  $("#aSource").onchange = paintSource;
+  const fromName = () => { const ch = channelFromName(S.pending && S.pending.name); if (ch) { $("#aSource").value = ch; paintSource(); } };
+  $("#fileInput").addEventListener("change", () => setTimeout(fromName, 0));
+  dz.addEventListener("drop", () => setTimeout(fromName, 0));
+  fromName(); paintSource();
+
   $("#analyzeBtn").onclick = () => runPipeline(S.pending?.blob || null, S.pending?.name || "", {
     channel: $("#aSource").value,
-    caller: { name: $("#aCallerName").value, number: $("#aCallerNumber").value },
+    caller: { name: $("#aCallerName").value, ...parseCallerInput($("#aCallerNumber").value, $("#aSource").value) },
   });
 };
 
@@ -974,7 +1018,7 @@ function resultCard(rec) {
       <div><dt>Token</dt><dd class="mono" title="${esc(rec.token)}">${esc(rec.token)}</dd></div>
       <div><dt>Risk score</dt><dd>${scoreBar(rec)}</dd></div>
       <div><dt>Source of call</dt><dd>${esc(channelName(rec))}</dd></div>
-      <div><dt>Caller ID</dt><dd>${esc(callerIdOf(rec) || "–")}</dd></div>
+      <div><dt>${esc(callerKindOf(rec))}</dt><dd>${esc(callerIdOf(rec) || "–")}</dd></div>
       <div><dt>Duration · words</dt><dd>${fmtDur(rec.duration)} · ${rec.tokens ?? "–"}</dd></div>
     </dl>
     <div><div class="lbl" style="margin-bottom:6px">Summary (from transcriber)</div><div class="summary">${esc(rec.summary || "No summary returned.")}</div></div>
@@ -1133,7 +1177,7 @@ async function openDrawer(id) {
           <div><dt>Date</dt><dd>${fmtDate(rec.createdAt)}</dd></div><div><dt>Time</dt><dd>${localTime(rec.createdAt)}</dd></div>
           <div><dt>Risk score</dt><dd>${scoreBar(rec)}</dd></div><div><dt>Duration</dt><dd>${fmtDur(rec.duration)}</dd></div>
           <div><dt>Words / tokens</dt><dd>${rec.tokens ?? "–"}</dd></div><div><dt>Source of call</dt><dd>${esc(channelName(rec))}</dd></div>
-          <div><dt>Caller ID</dt><dd>${esc(callerIdOf(rec) || "–")}</dd></div><div><dt>Classified by</dt><dd>${esc(rec.classifiedBy || rec.source || "–")}</dd></div>
+          <div><dt>${esc(callerKindOf(rec))}</dt><dd>${esc(callerIdOf(rec) || "–")}</dd></div><div><dt>Classified by</dt><dd>${esc(rec.classifiedBy || rec.source || "–")}</dd></div>
           <div><dt>File</dt><dd title="${esc(rec.fileName)}">${esc(rec.fileName || "–")}</dd></div><div><dt>Language</dt><dd>${esc(rec.language || "–")}</dd></div>
         </dl>
         ${audioUrl ? `<audio controls src="${audioUrl}" style="width:100%"></audio>` : ""}
