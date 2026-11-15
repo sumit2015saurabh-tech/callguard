@@ -1,8 +1,8 @@
 /* CallGuard: service worker.
-   Starts and stops tab capture for a live Telegram Web call, hands captured clips to the
-   CallGuard dashboard (which runs the microservice, the fraud category and the alert routing),
-   keeps the toolbar badge in sync, and answers the popup's reliability checks.
-   The audio itself is recorded in offscreen.js. */
+   Starts and stops tab capture for a live Telegram or WhatsApp Web call, hands captured clips
+   (with the call's source and caller identity) to the CallGuard dashboard, which runs the
+   microservice, the fraud category and the alert routing. It also keeps the toolbar badge in
+   sync and answers the popup's reliability checks. The audio itself is recorded in offscreen.js. */
 importScripts("store.js", "lib/core.js");
 const store = self.CGStore;
 const core = self.CGCore;
@@ -53,12 +53,28 @@ async function ensureOffscreen() {
     creating = chrome.offscreen.createDocument({
       url: "offscreen.html",
       reasons: ["USER_MEDIA", "AUDIO_PLAYBACK"],
-      justification: "Records the audio of the Telegram call tab (optionally with the microphone) and keeps the call audible while capturing.",
+      justification: "Records the audio of the Telegram or WhatsApp call tab (optionally with the microphone) and keeps the call audible while capturing.",
     }).catch((e) => {
       if (!/single offscreen/i.test(String(e && e.message))) throw e;
     }).finally(() => { creating = null; });
   }
   await creating;
+}
+
+/** Caller identity is read from the call screen by content.js in the call tab. */
+async function askCaller(tabId, platform) {
+  const read = async () => {
+    const res = await chrome.tabs.sendMessage(tabId, { type: "cg:caller-info" }).catch(() => null);
+    return res && res.caller ? res.caller : null;
+  };
+  let caller = await read();
+  if (!caller) {
+    /* A tab opened before the extension was installed has no content script yet. */
+    await chrome.scripting.executeScript({ target: { tabId }, files: ["content.js"] }).catch(() => {});
+    await sleep(150);
+    caller = await read();
+  }
+  return core.cleanCaller({ ...(caller || {}), platform });
 }
 
 async function startCapture(tabId) {
@@ -68,8 +84,9 @@ async function startCapture(tabId) {
     tabId = tab && tab.id;
   }
   const tab = tabId != null ? await chrome.tabs.get(tabId).catch(() => null) : null;
-  if (!tab || !core.isTelegramUrl(tab.url)) {
-    return { ok: false, reason: "Open the Telegram call in web.telegram.org, then start the capture there." };
+  const platform = tab ? core.platformFor(tab.url) : "";
+  if (!tab || !platform) {
+    return { ok: false, reason: "Open the call in web.telegram.org or web.whatsapp.com, then start the capture there." };
   }
 
   let streamId;
@@ -86,14 +103,17 @@ async function startCapture(tabId) {
 
   await ensureOffscreen();
   const settings = await getSettings();
-  const sessionId = `tg-${Date.now().toString(36)}`;
+  const caller = await askCaller(tab.id, platform);
+  const sessionId = `${platform === "whatsapp" ? "wa" : "tg"}-${Date.now().toString(36)}`;
   const res = await chrome.runtime.sendMessage({
     target: "offscreen",
     type: "cg:start-capture",
     streamId,
     tabId: tab.id,
     tabUrl: tab.url,
-    tabTitle: tab.title || "Telegram call",
+    tabTitle: tab.title || `${core.platformName(platform)} call`,
+    platform,
+    caller,
     sessionId,
     settings,
   }).catch((e) => ({ ok: false, reason: (e && e.message) || String(e) }));
@@ -103,7 +123,8 @@ async function startCapture(tabId) {
     return { ok: false, reason: (res && res.reason) || "The recorder didn't start." };
   }
   live = {
-    active: true, sessionId, tabId: tab.id, tabTitle: tab.title || "Telegram call",
+    active: true, sessionId, tabId: tab.id, tabTitle: tab.title || `${core.platformName(platform)} call`,
+    platform, caller,
     startedAt: new Date().toISOString(), clips: 0, level: 0, speech: false,
     mic: !!res.mic, micError: res.micError || "",
   };
@@ -188,6 +209,11 @@ async function sendClipToDashboard(id, opts = {}) {
   let base;
   try { base = core.normaliseDashboardUrl(settings.dashboardUrl); }
   catch (e) { throw new Error(e.message); }
+  /* The caller can be found after the capture started (a call screen takes a moment to paint),
+     so fall back to the live caller before giving up on it. */
+  const platform = clip.platform || (live.active ? live.platform : "") || core.platformFor(clip.tabUrl) || "";
+  const savedCaller = clip.caller && (clip.caller.name || clip.caller.number) ? clip.caller : null;
+  const caller = core.cleanCaller(savedCaller || (live.active ? live.caller : {}) || {});
   const tab = await findOrOpenDashboard(base, opts.focus);
   const res = await chrome.tabs.sendMessage(tab.id, {
     type: "cg:dashboard-import",
@@ -198,6 +224,8 @@ async function sendClipToDashboard(id, opts = {}) {
       capturedAt: clip.createdAt,
       duration: clip.duration,
       tabTitle: clip.tabTitle || "",
+      platform,
+      caller,
       audio: await blobToBase64(blob),
     },
   }).catch((e) => ({ ok: false, reason: (e && e.message) || String(e) }));
@@ -271,7 +299,13 @@ async function runChecks() {
   }
 
   const tg = await chrome.tabs.query({ url: "https://web.telegram.org/*" }).catch(() => []);
-  checks.push({ name: "Telegram tab", ok: tg.length > 0, detail: tg.length ? `${tg.length} open` : "open web.telegram.org first" });
+  const wa = await chrome.tabs.query({ url: "https://web.whatsapp.com/*" }).catch(() => []);
+  const callTabs = tg.length + wa.length;
+  checks.push({
+    name: "Call tab (Telegram / WhatsApp)",
+    ok: callTabs > 0,
+    detail: callTabs ? [tg.length && `${tg.length} Telegram`, wa.length && `${wa.length} WhatsApp`].filter(Boolean).join(", ") : "open web.telegram.org or web.whatsapp.com first",
+  });
 
   let urlOk = false;
   try { core.normaliseDashboardUrl(settings.dashboardUrl); urlOk = true; } catch { /* reported below */ }
@@ -311,6 +345,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     live = { active: false };
     paintBadge();
     chrome.offscreen.closeDocument().catch(() => {});
+    return;
+  }
+  if (msg.type === "cg:caller") {
+    if (msg.caller && live.active && sender.tab && sender.tab.id === live.tabId) {
+      live.caller = core.cleanCaller({ ...msg.caller, platform: live.platform });
+      paintBadge();
+    }
     return;
   }
   if (msg.type === "cg:clip-added") {
@@ -370,7 +411,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   if (live.active && live.tabId === tabId) stopCapture("tab closed");
 });
 chrome.tabs.onUpdated.addListener((tabId, info) => {
-  if (live.active && live.tabId === tabId && info.url && !core.isTelegramUrl(info.url)) stopCapture("left Telegram");
+  if (live.active && live.tabId === tabId && info.url && !core.isCallUrl(info.url)) stopCapture("left the call site");
 });
 
 chrome.runtime.onInstalled.addListener(async () => {

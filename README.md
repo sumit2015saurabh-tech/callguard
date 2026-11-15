@@ -49,7 +49,7 @@ Nobody sees the dashboard without logging in.
 ## Features
 
 - **Analyze:** upload a file (MP3/WAV/M4A/OGG/WEBM/FLAC) or record from the mic. A five-step pipeline view shows what happened.
-- **Every call gets:** date, unique token (`CG-YYYYMMDD-XXXXXX`), and from the microservice: summary, transcript, category, confidence and labels.
+- **Every call gets:** date, unique token (`CG-YYYYMMDD-XXXXXX`), the **source of the call** (phone, Telegram or WhatsApp) and the **caller ID** when it is known, and from the microservice: summary, transcript, category, confidence and labels.
 - **History:** filter by text, date range, time-of-day range (overnight ranges work), fraud type, verdict, risk, label and alert status. Sort, and export the filtered list as CSV or JSON.
 - **History folder on your computer** (Chrome/Edge): mirrors every call to `CallGuard-History/<date>/<time_type_token>/` with `call.json`, `summary.txt`, `transcript.txt`, the audio, and an `index.csv`.
 - **Call detail drawer:** audio playback, transcript, labels, alert log, mark reviewed, delete.
@@ -125,13 +125,13 @@ Sends the emails and notifications. It receives JSON for each alert:
 
 Without a notifier, alerts wait in the **outbox**. Emails open in the user's mail app with one click.
 
-## Chrome extension: capture a live Telegram call
+## Chrome extension: capture a live Telegram or WhatsApp call
 
-`extension/` is a Manifest V3 extension that records the audio of a live **Telegram Web** call and sends each spoken segment to this dashboard, where it runs through the same pipeline as an upload (microservice → transcript, summary, fraud category → history → alerts).
+`extension/` is a Manifest V3 extension that records the audio of a live **Telegram Web** or **WhatsApp Web** call and sends each spoken segment to this dashboard, where it runs through the same pipeline as an upload (microservice → transcript, summary, fraud category → history → alerts). Along with the audio it passes the **source of the call** (Telegram or WhatsApp) and the **caller ID** read from the call screen, so history shows who called and from where.
 
 1. Open `chrome://extensions`, turn on **Developer mode**, choose **Load unpacked**, and pick the `extension/` folder.
 2. Log in to CallGuard in a tab (clips are handed to that tab, so it must be signed in).
-3. Start the call at `web.telegram.org`. A small CallGuard dock appears bottom-right; press **Capture this call** (or start from the toolbar icon).
+3. Start the call at `web.telegram.org` or `web.whatsapp.com`. A small CallGuard dock appears bottom-right; press **Capture this call** (or start from the toolbar icon).
 4. Each voice clip is saved in the extension and can be sent from the popup. Turn on **Send each voice clip to CallGuard while the call is live** to analyze clips — and raise alerts — during the call.
 
 The extension captures the other party's voice from the tab, plays it back so the call stays audible, splits speech into clips, and keeps all audio on the device until you send it. It can mix in your own microphone, scores each clip for clarity (flagging clipping, quiet and mostly-silent clips), and its popup has a **Run reliability checks** button. Unit tests: `node --test extension/test/`. Install, permissions, settings and limits: [`extension/README.md`](extension/README.md).

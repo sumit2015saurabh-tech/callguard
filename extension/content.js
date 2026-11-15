@@ -1,7 +1,8 @@
 /* CallGuard content script.
 
-   On web.telegram.org it shows a small dock that captures the live call (the audio itself is
-   recorded by the offscreen document; this only drives it).
+   On web.telegram.org and web.whatsapp.com it shows a small dock that captures the live call
+   (the audio itself is recorded by the offscreen document; this only drives it), and reads the
+   caller's name/number off the call screen so the dashboard knows who called and from where.
 
    On the CallGuard dashboard it is a bridge: it receives a captured clip from the service
    worker and posts it into the page, because only page code can save a call to the dashboard's
@@ -11,8 +12,11 @@
   if (globalThis.__callguardInstalled) return;
   globalThis.__callguardInstalled = true;
 
-  const onTelegram = /(^|\.)web\.telegram\.org$/.test(location.hostname);
-  const onDashboard = !onTelegram;
+  const PLATFORM_NAME = { telegram: "Telegram", whatsapp: "WhatsApp" };
+  const platform = /(^|\.)web\.telegram\.org$/.test(location.hostname) ? "telegram"
+    : /(^|\.)web\.whatsapp\.com$/.test(location.hostname) ? "whatsapp" : "";
+  const onCallSite = !!platform;
+  const onDashboard = !onCallSite;
 
   const esc = (v) => String(v == null ? "" : v).replace(/[&<>"']/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -20,10 +24,97 @@
   const fmtDur = (s) => `${Math.floor(Math.max(0, s) / 60)}:${pad(Math.round(Math.max(0, s) % 60))}`;
   const send = (msg) => chrome.runtime.sendMessage(msg).catch(() => null);
 
+  /* ---------- caller identity (best effort, read off the call screen) ---------- */
+  const CALLER_BLOCK = /^(voice call|video call|incoming call|outgoing call|calling|ringing|connecting|reconnecting|call ended|end call|decline|accept|answer|mute|unmute|speaker|video|screen share|screen sharing|camera|chat|more|back|close|settings|whatsapp|whatsapp web|telegram|telegram web|end-to-end encrypted)$/i;
+
+  function tidyCallerName(raw) {
+    let s = String(raw == null ? "" : raw).replace(/\s+/g, " ").trim();
+    if (!s) return "";
+    s = s.replace(/\s*[·•|]\s*(voice|video)?\s*call\b.*$/i, "").trim();
+    s = s.replace(/\b(calling|ringing|connecting|reconnecting|call ended)\b.*$/i, "").trim();
+    s = s.replace(/^\d{1,2}:\d{2}(?::\d{2})?\s*/, "").trim();
+    if (!s || s.length > 64) return "";
+    if (CALLER_BLOCK.test(s)) return "";
+    if (/^[\d\s()+.-]+$/.test(s)) return "";            // a bare number is handled separately
+    return s;
+  }
+
+  function callerFrom(text) {
+    const raw = String(text == null ? "" : text).replace(/\s+/g, " ").trim();
+    if (!raw || raw.length > 120) return null;
+    const num = raw.match(/\+?\d[\d\s().-]{6,}\d/);
+    const number = num ? num[0].replace(/[^\d+]/g, "") : "";
+    const name = tidyCallerName(raw);
+    return name || number ? { name, number } : null;
+  }
+
+  function visible(el) {
+    const r = el.getBoundingClientRect();
+    if (r.width < 1 || r.height < 1) return false;
+    const st = getComputedStyle(el);
+    return st.display !== "none" && st.visibility !== "hidden" && Number(st.opacity) > 0.1;
+  }
+
+  /** Big visible elements that could be the call screen (Telegram names its classes, WhatsApp does not). */
+  function callPanels() {
+    const out = [];
+    const add = (el) => {
+      if (!(el instanceof HTMLElement) || el.closest("#callguard-dock") || out.includes(el)) return;
+      out.push(el);
+    };
+    for (const sel of ['[data-testid="call-screen" i]', '[data-testid="call-info" i]', '[class*="call-screen" i]',
+                       '[class*="call-interface" i]', '[class*="call-panel" i]', '[role="dialog"]',
+                       '[class*="call" i]', '[id*="call" i]']) {
+      let found;
+      try { found = document.querySelectorAll(sel); } catch { continue; }
+      for (const el of found) add(el);
+    }
+    return out.filter((el) => {
+      const r = el.getBoundingClientRect();
+      return r.width >= 160 && r.height >= 120;
+    }).slice(0, 12);
+  }
+
+  function findCaller() {
+    const texts = [];
+    for (const panel of callPanels()) {
+      for (const el of panel.querySelectorAll("[title]")) texts.push(el.getAttribute("title"));
+      for (const el of panel.querySelectorAll('h1,h2,h3,strong,b,[class*="peer-title" i],[class*="name" i],[class*="title" i]')) {
+        if (el.children.length <= 1) texts.push(el.textContent);
+      }
+      for (const el of panel.querySelectorAll("span,div")) {
+        if (!el.children.length) texts.push(el.textContent);
+        if (texts.length > 80) break;
+      }
+      if (texts.length) break;
+    }
+    if (!texts.length) {                          // fall back to the open chat's header
+      for (const sel of ["#main header [title]", '[data-testid="conversation-info-header-chat-title"]', '[class*="peer-title" i]']) {
+        let found;
+        try { found = document.querySelectorAll(sel); } catch { continue; }
+        for (const el of found) { texts.push(el.getAttribute("title") || el.textContent); break; }
+        if (texts.length) break;
+      }
+    }
+    const caller = { name: "", number: "" };
+    for (const text of texts) {
+      const c = callerFrom(text);
+      if (!c) continue;
+      if (c.name && !caller.name) caller.name = c.name;
+      if (c.number && !caller.number) caller.number = c.number;
+      if (caller.name) break;
+    }
+    return { ...caller, label: caller.name && caller.number ? `${caller.name} · ${caller.number}` : (caller.name || caller.number) };
+  }
+
   /* ============================ dashboard bridge ============================ */
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     if (!msg) return;
-    if (msg.type === "cg:ping") { sendResponse({ ok: true, telegram: onTelegram }); return; }
+    if (msg.type === "cg:ping") { sendResponse({ ok: true, platform, telegram: platform === "telegram" }); return; }
+    if (msg.type === "cg:caller-info") {
+      sendResponse({ ok: true, platform, caller: onCallSite ? findCaller() : { name: "", number: "", label: "" } });
+      return;
+    }
     if (msg.type !== "cg:dashboard-import") return;
     if (!onDashboard) { sendResponse({ ok: false, reason: "This tab isn't the CallGuard dashboard." }); return; }
     importClip(msg.clip).then(sendResponse, (e) => sendResponse({ ok: false, reason: (e && e.message) || String(e) }));
@@ -54,9 +145,9 @@
     });
   }
 
-  if (!onTelegram) return;
+  if (!onCallSite) return;
 
-  /* ============================ Telegram dock ============================ */
+  /* ============================ call dock ============================ */
   if (!document.body) {
     window.addEventListener("DOMContentLoaded", installDock, { once: true });
   } else {
@@ -97,6 +188,8 @@
         .btn:disabled { opacity: .6; cursor: default; }
         .hint { color: #6b807b; font-size: 11.5px; }
         .hint b { color: #a32a2a; }
+        .caller { color: #2f7f78; font-weight: 650; font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .caller[hidden] { display: none; }
         .confirm { border: 1px solid #f0d9a8; background: #fffaf0; border-radius: 10px; padding: 9px; display: grid; gap: 8px; }
         .confirm p { margin: 0; font-size: 11.5px; color: #6b5a33; }
         .confirm .row { display: flex; gap: 6px; }
@@ -113,8 +206,9 @@
           <span class="dot" id="dot"></span>
         </button>
         <div class="panel" id="panel" hidden>
-          <div class="head"><b>Telegram call</b><button class="x" id="close" aria-label="Close">✕</button></div>
+          <div class="head"><b id="title">Call</b><button class="x" id="close" aria-label="Close">✕</button></div>
           <div class="state" id="state">Checking…</div>
+          <div class="caller" id="caller" hidden></div>
           <div class="meter"><span id="lvl"></span></div>
           <div class="meta"><span id="timer">0:00</span><span id="clips">0 clips</span></div>
           <button class="btn primary" id="btn">Capture this call</button>
@@ -137,6 +231,8 @@
     let busy = false;
     let hint = "";
     let consent = false;
+    let caller = { name: "", number: "", label: "" };
+    let callerAt = 0;
 
     chrome.storage.local.get("cgConsent")
       .then((v) => { consent = !!(v && v.cgConsent); paint(); })
@@ -178,10 +274,11 @@
       await poll();
     }
 
-    /* A live Telegram call shows a large visible element whose class or id mentions "call". */
+    /* A live call shows a large visible element whose class or id mentions "call" — or, on
+       WhatsApp, a visible hang-up control (its class names are generated). */
     function detectCall() {
       let nodes;
-      try { nodes = document.querySelectorAll('[class*="call" i],[id*="call" i]'); } catch { return false; }
+      try { nodes = document.querySelectorAll('[class*="call" i],[id*="call" i],[data-testid*="call" i]'); } catch { nodes = []; }
       for (const el of nodes) {
         if (!(el instanceof HTMLElement) || el === host || host.contains(el)) continue;
         const r = el.getBoundingClientRect();
@@ -190,6 +287,11 @@
         if (st.display === "none" || st.visibility === "hidden" || Number(st.opacity) < 0.1) continue;
         return true;
       }
+      try {
+        for (const el of document.querySelectorAll('[aria-label*="end call" i],[aria-label*="hang up" i],[data-icon*="end-call" i],[data-testid*="end-call" i]')) {
+          if (el instanceof HTMLElement && !host.contains(el) && visible(el)) return true;
+        }
+      } catch { /* ignore */ }
       return false;
     }
 
@@ -200,6 +302,14 @@
         settings = res.settings || settings;
       }
       callActive = detectCall();
+      if (callActive && Date.now() - callerAt > 3000) {
+        callerAt = Date.now();
+        const found = findCaller();
+        if (found.label && found.label !== caller.label) {
+          caller = found;
+          send({ type: "cg:caller", caller: { name: found.name, number: found.number } });
+        }
+      }
       if (live.active && callActive) callSeen = true;
       if (live.active && callSeen && !callActive && settings && settings.autoStop !== false) {
         quietMs += 1500;
@@ -223,11 +333,15 @@
     function paint() {
       const on = !!live.active;
       const n = Number(live.clips || 0);
+      const name = PLATFORM_NAME[platform] || "Call";
+      $("#title").textContent = `${name} call`;
       $("#dot").dataset.on = on ? "1" : "0";
       const mic = on && live.mic ? " · mic on" : "";
       $("#state").textContent = (on
         ? (live.speech ? "Recording · voice detected" : "Recording · quiet")
-        : (callActive ? "Telegram call detected" : "No Telegram call detected")) + mic;
+        : (callActive ? `${name} call detected` : `No ${name} call detected`)) + mic;
+      $("#caller").hidden = !caller.label;
+      $("#caller").textContent = caller.label ? `Caller: ${caller.label}` : "";
       $("#clips").textContent = `${n} clip${n === 1 ? "" : "s"}`;
       $("#lvl").style.width = `${Math.round((live.level || 0) * 100)}%`;
       $("#btn").textContent = on ? "Stop capture" : "Capture this call";

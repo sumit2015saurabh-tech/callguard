@@ -7,6 +7,20 @@ const D = window.CG_DATA;
 const CATS = D.categories;
 const CODES = Object.keys(CATS);
 
+/* Where a call came from, and who was on the other end. The extension fills both in when it
+   captures a Telegram or WhatsApp Web call; uploads and recordings can set them by hand. */
+const CHANNELS = { phone: "Phone call", telegram: "Telegram", whatsapp: "WhatsApp" };
+const channelOf = (rec) => {
+  if (rec && CHANNELS[rec.channel]) return rec.channel;
+  const source = String((rec && rec.source) || "");
+  if (source.includes("whatsapp")) return "whatsapp";
+  if (source.includes("telegram")) return "telegram";
+  return "phone";
+};
+const channelName = (rec) => CHANNELS[channelOf(rec)];
+const channelChip = (rec) => `<span class="chip">${esc(channelName(rec))}</span>`;
+const callerIdOf = (rec) => String((rec && (rec.callerId || [rec.callerName, rec.callerNumber].filter(Boolean).join(" · "))) || "");
+
 /* ============================== utilities ============================== */
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -410,10 +424,12 @@ async function dispatchAlerts(rec) {
 const mailto = (n) => `mailto:${encodeURIComponent(n.to)}?subject=${encodeURIComponent(n.subject)}&body=${encodeURIComponent(n.body)}`;
 
 /* ============================== records ============================== */
-function buildRecord({ token, createdAt, fileName, audioType, tr, cls, source }) {
+function buildRecord({ token, createdAt, fileName, audioType, tr, cls, source, channel, caller }) {
   const code = cls.category;
   const c = CATS[code];
   const words = (tr.transcript.match(/\S+/g) || []).length;
+  const callerName = String((caller && caller.name) || "").replace(/\s+/g, " ").trim().slice(0, 80);
+  const callerNumber = String((caller && caller.number) || "").replace(/\s+/g, " ").trim().slice(0, 24);
   const rec = {
     id: token, token, createdAt, fileName: fileName || "", audioType: audioType || "",
     duration: tr.duration != null ? Number(tr.duration) : null, language: tr.language || "",
@@ -422,7 +438,9 @@ function buildRecord({ token, createdAt, fileName, audioType, tr, cls, source })
     serviceToken: tr.token && tr.token !== token ? String(tr.token) : "",
     category: code, categoryName: c.name, isFraud: code !== "F0", isBanking: !!c.banking, risk: tr.risk || c.risk, decision: tr.decision || "",
     confidence: cls.confidence != null ? Number(cls.confidence) : null, scores: cls.scores || null, classifiedBy: cls.by,
-    source, labels: tr.labels || [], userLabels: [], notifications: [], reviewed: false, hasAudio: false,
+    source, channel: CHANNELS[channel] ? channel : "phone",
+    callerName, callerNumber, callerId: callerName && callerNumber ? `${callerName} · ${callerNumber}` : (callerName || callerNumber),
+    labels: tr.labels || [], userLabels: [], notifications: [], reviewed: false, hasAudio: false,
   };
   return rec;
 }
@@ -478,9 +496,9 @@ const folder = {
 };
 
 function toCSV(rows) {
-  const cols = ["token", "date", "time", "category", "category_name", "verdict", "risk", "confidence", "duration_sec", "tokens", "labels", "alerts_sent", "summary"];
+  const cols = ["token", "date", "time", "source", "caller_id", "category", "category_name", "verdict", "risk", "confidence", "duration_sec", "tokens", "labels", "alerts_sent", "summary"];
   const q = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
-  return [cols.join(","), ...rows.map((r) => [r.token, localDate(r.createdAt), localTime(r.createdAt), r.category, r.categoryName,
+  return [cols.join(","), ...rows.map((r) => [r.token, localDate(r.createdAt), localTime(r.createdAt), channelName(r), callerIdOf(r), r.category, r.categoryName,
     r.isFraud ? "fraud" : "not fraud", r.risk, r.confidence ?? "", r.duration ?? "", r.tokens ?? "",
     r.labels.join("|"), r.notifications.filter((n) => ["sent", "delivered", "queued"].includes(n.status)).length, r.summary].map(q).join(","))].join("\n");
 }
@@ -720,6 +738,14 @@ VIEWS.analyze = (root) => {
             </div>
           </div>
           <div id="filePill" style="margin-top:14px"></div>
+          <div class="row" style="margin-top:16px;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;align-items:end">
+            <div class="field"><label for="aSource">Source of call</label>
+              <select class="input" id="aSource">${Object.entries(CHANNELS).map(([v, t]) => `<option value="${v}">${t}</option>`).join("")}</select></div>
+            <div class="field"><label for="aCallerName">Caller name (optional)</label>
+              <input class="input" id="aCallerName" maxlength="80" placeholder="e.g. Asha Rao" autocomplete="off"></div>
+            <div class="field"><label for="aCallerNumber">Caller number (optional)</label>
+              <input class="input" id="aCallerNumber" maxlength="24" inputmode="tel" placeholder="+91 98765 43210" autocomplete="off"></div>
+          </div>
           <div class="row" style="margin-top:16px">
             <button class="btn btn-primary" id="analyzeBtn">${icon("wave")}Analyze call</button>
           </div>
@@ -764,7 +790,10 @@ VIEWS.analyze = (root) => {
   if (recorder.active()) $("#srcSeg [data-s=record]").click();
   recorder.paint();
 
-  $("#analyzeBtn").onclick = () => runPipeline(S.pending?.blob || null, S.pending?.name || "");
+  $("#analyzeBtn").onclick = () => runPipeline(S.pending?.blob || null, S.pending?.name || "", {
+    channel: $("#aSource").value,
+    caller: { name: $("#aCallerName").value, number: $("#aCallerNumber").value },
+  });
 };
 
 /* ---------- microphone recorder: lives outside the page, so switching pages never stops it ---------- */
@@ -832,7 +861,7 @@ function renderRun() {
           <div class="faint" style="font-size:12px;margin-top:8px">No result was saved and no alerts were sent.</div>
           <div class="row" style="margin-top:12px">${canRetry ? `<button class="btn btn-primary btn-sm" id="retryBtn">Try again</button>` : ""}
             ${/connected|URL|token|CORS|timeout|sign-in/i.test(detail + title) ? `<a class="btn btn-sm" href="#/settings">Open Settings</a>` : ""}</div></div></div></div>`;
-    const rb = $("#retryBtn"); if (rb) rb.onclick = () => runPipeline(r.blob, r.fileName);
+    const rb = $("#retryBtn"); if (rb) rb.onclick = () => runPipeline(r.blob, r.fileName, r.opts);
   }
 }
 
@@ -852,7 +881,7 @@ const stepItems = (state = {}) => STEPS.map(([k, t, sub], i) => {
 async function runPipeline(blob, fileName, opts = {}) {
   if (S.run && S.run.running) { toast("An analysis is already running.", "alert"); return; }
   const state = {};
-  S.run = { state, running: true, blob, fileName };
+  S.run = { state, running: true, blob, fileName, opts };
   const set = (k, st, note) => { state[k] = { st, note }; const el = $("#steps"); if (el) el.innerHTML = stepItems(state); };
   renderRun();
   const createdAt = opts.createdAt || new Date().toISOString();
@@ -875,7 +904,7 @@ async function runPipeline(blob, fileName, opts = {}) {
     const cls = { category: tr.category, confidence: tr.confidence, scores: tr.scores, by: "microservice" };
     set("classify", "done", `${cls.category} · ${CATS[cls.category].name}${cls.confidence != null ? ` (${pct(cls.confidence)})` : ""}`);
     cur = "label"; set("label", "active");
-    const rec = buildRecord({ token, createdAt, fileName, audioType: blob.type, tr, cls, source: opts.source || "microservice" });
+    const rec = buildRecord({ token, createdAt, fileName, audioType: blob.type, tr, cls, source: opts.source || "microservice", channel: opts.channel, caller: opts.caller });
     rec.notifications = planAlerts(rec);
     await saveRecord(rec, blob);
     set("label", "done", `${rec.labels.length} labels · saved${S.dir ? " + history folder" : ""}`);
@@ -920,6 +949,8 @@ function resultCard(rec) {
       <div><dt>Date</dt><dd>${fmtDT(rec.createdAt)}</dd></div>
       <div><dt>Token</dt><dd class="mono" title="${esc(rec.token)}">${esc(rec.token)}</dd></div>
       <div><dt>Confidence</dt><dd>${confBar(rec.confidence)}</dd></div>
+      <div><dt>Source of call</dt><dd>${esc(channelName(rec))}</dd></div>
+      <div><dt>Caller ID</dt><dd>${esc(callerIdOf(rec) || "–")}</dd></div>
       <div><dt>Duration · words</dt><dd>${fmtDur(rec.duration)} · ${rec.tokens ?? "–"}</dd></div>
     </dl>
     <div><div class="lbl" style="margin-bottom:6px">Summary (from transcriber)</div><div class="summary">${esc(rec.summary || "No summary returned.")}</div></div>
@@ -954,7 +985,7 @@ function bindNotifActions(scope, rerender) {
 }
 
 /* ============================== view: history ============================== */
-const defaultFilters = () => ({ q: "", from: "", to: "", tFrom: "", tTo: "", types: [], verdict: "all", risk: "all", label: "", alerts: "any", sort: "new" });
+const defaultFilters = () => ({ q: "", from: "", to: "", tFrom: "", tTo: "", types: [], channel: "all", verdict: "all", risk: "all", label: "", alerts: "any", sort: "new" });
 
 function applyFilters(F) {
   const q = F.q.trim().toLowerCase();
@@ -967,6 +998,7 @@ function applyFilters(F) {
       if (a <= b ? (t < a || t > b) : (t < a && t > b)) return false;    // supports overnight ranges like 22:00–06:00
     }
     if (F.types.length && !F.types.includes(c.category)) return false;
+    if (F.channel !== "all" && channelOf(c) !== F.channel) return false;
     if (F.verdict === "fraud" && !c.isFraud) return false;
     if (F.verdict === "safe" && c.isFraud) return false;
     if (F.verdict === "banking" && !c.isBanking) return false;
@@ -974,7 +1006,7 @@ function applyFilters(F) {
     if (F.label && !c.labels.includes(F.label)) return false;
     if (F.alerts === "alerted" && !alertCount(c)) return false;
     if (F.alerts === "problem" && !c.notifications.some((n) => ["failed", "skipped", "queued"].includes(n.status))) return false;
-    if (q && !`${c.token} ${c.summary} ${c.transcript} ${c.categoryName} ${c.fileName} ${c.labels.join(" ")}`.toLowerCase().includes(q)) return false;
+    if (q && !`${c.token} ${c.summary} ${c.transcript} ${c.categoryName} ${c.fileName} ${callerIdOf(c)} ${c.labels.join(" ")}`.toLowerCase().includes(q)) return false;
     return true;
   });
   const by = { new: (a, b) => b.createdAt.localeCompare(a.createdAt), old: (a, b) => a.createdAt.localeCompare(b.createdAt),
@@ -997,7 +1029,9 @@ VIEWS.history = (root) => {
           <div class="field"><label for="fsort">Sort</label><select class="input" id="fsort">
             ${[["new", "Newest first"], ["old", "Oldest first"], ["risk", "Highest risk"], ["conf", "Highest confidence"]].map(([v, t]) => `<option value="${v}" ${F.sort === v ? "selected" : ""}>${t}</option>`).join("")}</select></div>
         </div>
-        <div class="f-row" style="grid-template-columns:repeat(4,minmax(0,1fr)) 2fr">
+        <div class="f-row" style="grid-template-columns:repeat(5,minmax(0,1fr)) 2fr">
+          <div class="field"><label for="fchannel">Source of call</label><select class="input" id="fchannel">
+            ${[["all", "Any source"], ...Object.entries(CHANNELS)].map(([v, t]) => `<option value="${v}" ${F.channel === v ? "selected" : ""}>${t}</option>`).join("")}</select></div>
           <div class="field"><label for="fverdict">Verdict</label><select class="input" id="fverdict">
             ${[["all", "All calls"], ["fraud", "Fraud only"], ["safe", "Not fraud only"], ["banking", "Banking fraud"]].map(([v, t]) => `<option value="${v}" ${F.verdict === v ? "selected" : ""}>${t}</option>`).join("")}</select></div>
           <div class="field"><label for="frisk">Risk</label><select class="input" id="frisk">
@@ -1020,7 +1054,7 @@ VIEWS.history = (root) => {
         ${folder.supported ? `<button class="btn btn-sm btn-soft" id="syncDir">${icon("folder")}${S.dir ? "Sync to folder" : "Save to a folder"}</button>` : ""}
       </div>
       <div class="table-wrap"><table class="tbl"><thead><tr>
-        <th>Date</th><th>Time</th><th>Token</th><th>Type</th><th>Verdict</th><th>Risk</th><th>Confidence</th><th>Labels</th><th class="num">Alerts</th>
+        <th>Date</th><th>Time</th><th>Source</th><th>Caller</th><th>Token</th><th>Type</th><th>Verdict</th><th>Risk</th><th>Confidence</th><th>Labels</th><th class="num">Alerts</th>
       </tr></thead><tbody id="rows"></tbody></table></div>
     </div>`;
 
@@ -1031,18 +1065,19 @@ VIEWS.history = (root) => {
     $("#resSub").textContent = `${rows.filter((r) => r.isFraud).length} fraud · ${S.calls.length} in history`;
     $("#rows").innerHTML = rows.length ? rows.slice(0, 500).map((c) => `<tr data-open="${c.id}">
       <td class="nowrap">${fmtDate(c.createdAt)}</td><td class="mono">${localTime(c.createdAt)}</td>
+      <td>${channelChip(c)}</td><td>${callerIdOf(c) ? esc(callerIdOf(c)) : `<span class="faint">–</span>`}</td>
       <td class="mono nowrap">${esc(c.token)}</td><td>${catChip(c.category)}</td><td>${verdictBadge(c)}</td><td>${riskBadge(c.risk)}</td>
       <td style="min-width:120px">${confBar(c.confidence)}</td>
       <td>${(() => { const ls = c.labels;
         return ls.length ? `<div class="labels">${ls.slice(0, 2).map((l) => `<span class="chip chip-label">${esc(l)}</span>`).join("")}${ls.length > 2 ? `<span class="chip" title="${esc(ls.slice(2).join(", "))}">+${ls.length - 2}</span>` : ""}</div>` : `<span class="faint">–</span>`; })()}</td>
       <td class="num">${alertCount(c) || `<span class="faint">0</span>`}</td></tr>`).join("")
-      : `<tr><td colspan="9"><div class="empty">${icon("clock")}<div>${S.calls.length ? "No calls match these filters." : "No calls yet. Analyse one to start your history."}</div></div></td></tr>`;
+      : `<tr><td colspan="11"><div class="empty">${icon("clock")}<div>${S.calls.length ? "No calls match these filters." : "No calls yet. Analyse one to start your history."}</div></div></td></tr>`;
     $$("#rows [data-open]").forEach((tr) => tr.onclick = () => openDrawer(tr.dataset.open));
     return rows;
   };
   const bind = (id, key, ev = "input") => $(id).addEventListener(ev, (e) => { F[key] = e.target.value; paint(); });
   bind("#fq", "q"); bind("#ffrom", "from", "change"); bind("#fto", "to", "change"); bind("#ftf", "tFrom", "change"); bind("#ftt", "tTo", "change");
-  bind("#fsort", "sort", "change"); bind("#fverdict", "verdict", "change"); bind("#frisk", "risk", "change"); bind("#flabel", "label", "change"); bind("#falerts", "alerts", "change");
+  bind("#fchannel", "channel", "change"); bind("#fsort", "sort", "change"); bind("#fverdict", "verdict", "change"); bind("#frisk", "risk", "change"); bind("#flabel", "label", "change"); bind("#falerts", "alerts", "change");
   $$("[data-type]", root).forEach((b) => b.onclick = () => { const t = b.dataset.type; F.types = F.types.includes(t) ? F.types.filter((x) => x !== t) : [...F.types, t]; b.classList.toggle("on"); paint(); });
   $$("[data-quick]", root).forEach((b) => b.onclick = () => {
     const v = b.dataset.quick; F.to = v === "all" ? "" : localDate(new Date());
@@ -1073,7 +1108,8 @@ async function openDrawer(id) {
         <dl class="kv">
           <div><dt>Date</dt><dd>${fmtDate(rec.createdAt)}</dd></div><div><dt>Time</dt><dd>${localTime(rec.createdAt)}</dd></div>
           <div><dt>Confidence</dt><dd>${confBar(rec.confidence)}</dd></div><div><dt>Duration</dt><dd>${fmtDur(rec.duration)}</dd></div>
-          <div><dt>Words / tokens</dt><dd>${rec.tokens ?? "–"}</dd></div><div><dt>Source</dt><dd>${esc(rec.source)}${rec.classifiedBy ? ` · ${esc(rec.classifiedBy)}` : ""}</dd></div>
+          <div><dt>Words / tokens</dt><dd>${rec.tokens ?? "–"}</dd></div><div><dt>Source of call</dt><dd>${esc(channelName(rec))}</dd></div>
+          <div><dt>Caller ID</dt><dd>${esc(callerIdOf(rec) || "–")}</dd></div><div><dt>Classified by</dt><dd>${esc(rec.classifiedBy || rec.source || "–")}</dd></div>
           <div><dt>File</dt><dd title="${esc(rec.fileName)}">${esc(rec.fileName || "–")}</dd></div><div><dt>Language</dt><dd>${esc(rec.language || "–")}</dd></div>
         </dl>
         ${audioUrl ? `<audio controls src="${audioUrl}" style="width:100%"></audio>` : ""}
@@ -1712,13 +1748,14 @@ async function importExtensionClip(clip) {
   } catch { return { ok: false, reason: "The clip's audio couldn't be read." }; }
   if (!blob.size) return { ok: false, reason: "The clip was empty." };
   const when = clip.capturedAt && !isNaN(Date.parse(clip.capturedAt)) ? new Date(clip.capturedAt).toISOString() : new Date().toISOString();
-  const name = clip.fileName || `telegram-call-${localTime(when).replace(":", "")}.webm`;
+  const channel = CHANNELS[clip.platform] ? clip.platform : "telegram";       // older clips have no platform
+  const name = clip.fileName || `${channel}-call-${localTime(when).replace(":", "")}.webm`;
   const maxSecs = CFG.maxAudioSeconds || 120;
   const secs = clip.duration != null && !isNaN(Number(clip.duration)) ? Number(clip.duration) : await audioDuration(blob);
   if (secs != null && secs > maxSecs + 0.5) return { ok: false, reason: `That clip is ${fmtDur(secs)} long; the microservice accepts up to ${fmtDur(maxSecs)}.` };
   if (!location.hash.startsWith("#/analyze")) location.hash = "#/analyze";
   await sleep(30);                                  // let the Analyze page render its pipeline
-  const rec = await runPipeline(blob, name, { source: "telegram-extension", createdAt: when });
+  const rec = await runPipeline(blob, name, { source: `${channel}-extension`, channel, caller: clip.caller || {}, createdAt: when });
   if (!rec) {
     const err = S.run && S.run.error;
     return { ok: false, reason: err ? `${err.title} ${err.detail}`.trim() : "The analysis didn't finish." };

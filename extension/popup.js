@@ -14,12 +14,12 @@
   const fmtDur = (s) => `${Math.floor(Math.max(0, Number(s) || 0) / 60)}:${pad(Math.round(Math.max(0, Number(s) || 0) % 60))}`;
   const kb = (n) => (Number(n) > 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round((Number(n) || 0) / 1024))} KB`);
   const clock = (iso) => new Date(iso).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-  const isTelegram = (tab) => !!tab && core.isTelegramUrl(tab.url);
+  const isCallTab = (tab) => !!tab && core.isCallUrl(tab.url);
 
   let live = { active: false };
   let settings = null;
   let activeTab = null;
-  let tgTabs = [];
+  let callTabs = [];
   let clips = [];
   let signature = "";
   let settingsLoaded = false;
@@ -50,10 +50,10 @@
   }
 
   async function refresh() {
-    const [st, tabList, tg] = await Promise.all([
+    const [st, tabList, tabs] = await Promise.all([
       send({ type: "cg:status" }),
       chrome.tabs.query({ active: true, currentWindow: true }).catch(() => []),
-      chrome.tabs.query({ url: "https://web.telegram.org/*" }).catch(() => []),
+      chrome.tabs.query({ url: ["https://web.telegram.org/*", "https://web.whatsapp.com/*"] }).catch(() => []),
     ]);
     if (st && st.ok) {
       live = st.live || { active: false };
@@ -61,7 +61,7 @@
       else if (st.settings) settings = { ...(settings || {}), dashboardUrl: st.settings.dashboardUrl };
     }
     activeTab = (tabList && tabList[0]) || null;
-    tgTabs = tg || [];
+    callTabs = tabs || [];
     paintLive();
     await renderClips();
   }
@@ -76,12 +76,13 @@
     $("#level").style.width = `${Math.round((live.level || 0) * 100)}%`;
     $("#clipCount").textContent = `${n} clip${n === 1 ? "" : "s"}`;
     const mic = live.mic ? " · mic mixed" : "";
+    const caller = live.caller && live.caller.label ? ` · caller ${live.caller.label}` : "";
     $("#liveInfo").textContent = on
-      ? (live.tabTitle ? `Capturing ${live.tabTitle}${mic}` : `Capturing the Telegram tab${mic}`)
-      : isTelegram(activeTab) ? "Telegram tab ready to capture." : tgTabs.length ? "Switch to your Telegram tab." : "Open web.telegram.org first.";
+      ? (live.tabTitle ? `Capturing ${live.tabTitle}${caller}${mic}` : `Capturing the ${core.platformName(live.platform) || "call"} tab${caller}${mic}`)
+      : isCallTab(activeTab) ? `${core.platformName(core.platformFor(activeTab.url)) || "Call"} tab ready to capture.` : callTabs.length ? "Switch to your call tab." : "Open web.telegram.org or web.whatsapp.com first.";
     $("#mainBtn").textContent = on ? "Stop capture" : "Capture this call";
     $("#mainBtn").classList.toggle("stop", on);
-    $("#mainBtn").disabled = !on && !isTelegram(activeTab) && !tgTabs.length;
+    $("#mainBtn").disabled = !on && !isCallTab(activeTab) && !callTabs.length;
     $("#note").hidden = !(on && live.micError);
     $("#note").textContent = on && live.micError ? `Mic unavailable: ${live.micError}` : "";
     $("#dashBtn").onclick = () => chrome.tabs.create({ url: (settings && settings.dashboardUrl) || DASH });
@@ -249,8 +250,8 @@
       const r = await send({ type: "cg:stop", reason: "stopped from the popup" });
       toast(r && r.ok ? "Capture stopped." : (r && r.reason) || "Couldn't stop the capture.");
     } else {
-      const target = isTelegram(activeTab) ? activeTab : tgTabs[0];
-      if (!target) { toast("Open web.telegram.org and start the call first."); return; }
+      const target = isCallTab(activeTab) ? activeTab : callTabs[0];
+      if (!target) { toast("Open a Telegram or WhatsApp call first."); return; }
       const r = await send({ type: "cg:start", tabId: target.id });
       if (r && r.ok) {
         toast(r.micError ? "Capturing, but the microphone wasn't available." : "Capturing this call.");

@@ -46,7 +46,8 @@
     const d = new Date(ms);
     const p = (v) => String(v).padStart(2, "0");
     const stamp = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
-    return `telegram-${stamp}-${kind === "call" ? "call" : `clip${n}`}.webm`;
+    const platform = S.session && S.session.platform === "whatsapp" ? "whatsapp" : "telegram";
+    return `${platform}-${stamp}-${kind === "call" ? "call" : `clip${n}`}.webm`;
   }
 
   function snapshot() {
@@ -56,6 +57,8 @@
       startedAt: S.session ? S.session.startedAt : "",
       tabId: S.session ? S.session.tabId : null,
       tabTitle: S.session ? S.session.tabTitle : "",
+      platform: S.session ? S.session.platform : "",
+      caller: S.session ? S.session.caller : null,
       clips: S.session ? S.session.clips : 0,
       level: Math.round(S.level * 100) / 100,
       speech: !!S.speech,
@@ -112,6 +115,8 @@
       offsetSec: Math.max(0, Math.round((info.startedAt - S.captureStart) / 1000)),
       tabTitle: S.session.tabTitle || "",
       tabUrl: S.session.tabUrl || "",
+      platform: S.session.platform || "",
+      caller: S.session.caller || null,
       mic: !!S.session.mic,
       clarity: measured.clarity,
       fileName: fileName(info.startedAt, info.kind, n),
@@ -264,7 +269,9 @@
       id: msg.sessionId,
       tabId: msg.tabId,
       tabUrl: msg.tabUrl || "",
-      tabTitle: msg.tabTitle || "Telegram call",
+      tabTitle: msg.tabTitle || "Call",
+      platform: msg.platform === "whatsapp" ? "whatsapp" : "telegram",
+      caller: core.cleanCaller(msg.caller || {}),
       startedAt: new Date(S.captureStart).toISOString(),
       sensitivity: core.SENSITIVITIES.includes(settings.sensitivity) ? settings.sensitivity : "medium",
       keepFullCall: settings.keepFullCall !== false,

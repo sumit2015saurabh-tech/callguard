@@ -32,7 +32,18 @@
     maxClipMs: 40000,
   });
 
-  const TELEGRAM = /^https:\/\/web\.telegram\.org\//;
+  /* The call sites the extension can capture from. `platformFor` is the single source of truth,
+     so the service worker, popup and recorder always agree on the label and the host. */
+  const PLATFORMS = Object.freeze({
+    telegram: Object.freeze({ key: "telegram", name: "Telegram", host: "web.telegram.org" }),
+    whatsapp: Object.freeze({ key: "whatsapp", name: "WhatsApp", host: "web.whatsapp.com" }),
+  });
+  const CALL_URLS = Object.freeze({
+    telegram: /^https:\/\/web\.telegram\.org\//,
+    whatsapp: /^https:\/\/web\.whatsapp\.com\//,
+  });
+  const CALLER_MAX = 80;
+  const NUMBER_MAX = 20;
 
   const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
   const asBool = (value, fallback) => (typeof value === "boolean" ? value : fallback);
@@ -47,8 +58,50 @@
     return url.origin + (url.pathname || "/");
   }
 
+  /** "telegram", "whatsapp", or "" when the URL is neither call site. */
+  function platformFor(url) {
+    const text = String(url || "");
+    for (const key of Object.keys(CALL_URLS)) {
+      if (CALL_URLS[key].test(text)) return key;
+    }
+    return "";
+  }
+
   function isTelegramUrl(url) {
-    return TELEGRAM.test(String(url || ""));
+    return platformFor(url) === "telegram";
+  }
+
+  function isWhatsAppUrl(url) {
+    return platformFor(url) === "whatsapp";
+  }
+
+  function isCallUrl(url) {
+    return !!platformFor(url);
+  }
+
+  function platformName(key) {
+    return Object.prototype.hasOwnProperty.call(PLATFORMS, key) ? PLATFORMS[key].name : "";
+  }
+
+  /**
+   * Normalise a caller identity read from a call screen: trimmed, single-spaced,
+   * capped in length, with the phone number reduced to digits (and a leading +).
+   * Never throws, so a half-detected caller can't break a capture.
+   */
+  function cleanCaller(raw) {
+    const src = raw && typeof raw === "object" ? raw : {};
+    const name = String(src.name == null ? "" : src.name).replace(/\s+/g, " ").trim().slice(0, CALLER_MAX);
+    const digits = String(src.number == null ? "" : src.number).replace(/[^\d+]/g, "");
+    const number = (
+      digits.startsWith("+") ? `+${digits.slice(1).replace(/\+/g, "")}` : digits.replace(/\+/g, "")
+    ).slice(0, NUMBER_MAX);
+    const platform = Object.prototype.hasOwnProperty.call(PLATFORMS, src.platform) ? src.platform : "";
+    return {
+      name,
+      number,
+      platform,
+      label: name && number ? `${name} · ${number}` : (name || number),
+    };
   }
 
   function thresholdFor(sensitivity) {
@@ -196,8 +249,14 @@
     SENSITIVITIES,
     THRESHOLDS,
     SEGMENT_DEFAULTS,
+    PLATFORMS,
     normaliseDashboardUrl,
+    platformFor,
+    platformName,
     isTelegramUrl,
+    isWhatsAppUrl,
+    isCallUrl,
+    cleanCaller,
     thresholdFor,
     mergeSettings,
     createSegmenter,

@@ -1,11 +1,13 @@
-# CallGuard capture extension (Telegram Web)
+# CallGuard capture extension (Telegram & WhatsApp Web)
 
-A Manifest V3 Chrome extension that records the audio of a **live Telegram Web call** and sends
-each spoken segment ("voice clip") into the **CallGuard dashboard**, where it runs through the
-normal pipeline: microservice → transcript, summary and fraud category → history → alert routing.
+A Manifest V3 Chrome extension that records the audio of a **live Telegram Web or WhatsApp Web
+call** and sends each spoken segment ("voice clip") into the **CallGuard dashboard**, where it
+runs through the normal pipeline: microservice → transcript, summary and fraud category →
+history → alert routing. Each clip also carries the **source of the call** (Telegram or WhatsApp)
+and the **caller ID** read from the call screen.
 
 The extension has no build step, no runtime dependencies and makes no network requests of its
-own. Privacy: [`PRIVACY.md`](PRIVACY.md). Current release: **1.0.0** (Manifest V3).
+own. Privacy: [`PRIVACY.md`](PRIVACY.md). Current release: **1.1.0** (Manifest V3).
 
 ## Install
 
@@ -20,8 +22,9 @@ it to the Chrome Web Store.
 
 ## Capture a call
 
-1. Open the call at `web.telegram.org` (Web K or Web A). A small **CallGuard dock** appears in the
-   bottom-right corner; it shows whether a call is detected.
+1. Open the call at `web.telegram.org` (Web K or Web A) or `web.whatsapp.com`. A small
+   **CallGuard dock** appears in the bottom-right corner; it shows whether a call is detected, the
+   platform, and the caller it can read from the call screen.
 2. Press **Capture this call** in the dock, or press the CallGuard toolbar icon and use
    **Capture this call** there. The first time you are asked to confirm that everyone on the call
    agrees to being recorded.
@@ -34,12 +37,22 @@ it to the Chrome Web Store.
 5. Turn on **Send each voice clip to CallGuard while the call is live** (Settings) to have every
    clip analyzed as soon as it is captured, so alerts fire during the call rather than after it.
 
-**Stop** from the dock or the popup. With **Stop when the Telegram call ends** on, a capture also
-ends by itself a few seconds after the call UI disappears.
+**Stop** from the dock or the popup. With **Stop when the call ends** on, a capture also ends by
+itself a few seconds after the call UI disappears.
+
+## Caller ID and source of call
+
+The dock reads the contact name (and phone number, when WhatsApp shows one for an unsaved
+contact) from the call screen, and labels the capture with the platform — Telegram or WhatsApp.
+Both travel with every clip to the dashboard, which shows them on the result card, in the
+history table and its **Source of call** filter, in the call detail drawer and in CSV/JSON
+exports. Reading the caller is best effort: WhatsApp generates its own class names, so the
+extension falls back to the visible call panel and then the open chat's header. If it can't find
+a name it records the clip with the source and an empty caller ID rather than guessing.
 
 ## What is recorded
 
-- The **other party's voice**, taken from the Telegram tab's audio, split into voice clips.
+- The **other party's voice**, taken from the Telegram or WhatsApp tab's audio, split into voice clips.
 - Your own voice too, when **Mix my microphone into the recording** is on (Settings). The mic is
   mixed in at 0.8 gain so the caller stays dominant, and it is **only** sent to the recorder — never
   played back through the speakers, which would cause feedback in the call.
@@ -76,7 +89,7 @@ runs on the actual recorded audio, so mic mixing and tab volume are reflected in
 | CallGuard dashboard URL | the public dashboard | Where clips are handed over. Another host asks for site access the first time. |
 | Send each voice clip while the call is live | off | Analyzes every new clip automatically (queued, one at a time). |
 | Also keep the whole call as one recording | on | Saves one `…-call.webm` for evidence/download. |
-| Stop when the Telegram call ends | on | Ends the capture shortly after the call UI disappears. |
+| Stop when the call ends | on | Ends the capture shortly after the call UI disappears. |
 | Mix my microphone into the recording | off | Adds your own voice to every clip (recording only). |
 | Don't auto-send clips with poor clarity | on | Keeps quiet or clipped clips locally until you send them. |
 | Voice detection sensitivity | medium | Lower thresholds pick up quieter speech; raise it in a noisy room. |
@@ -87,7 +100,7 @@ capture started from the icon (see below).
 ## How it works
 
 ```
-web.telegram.org tab ──tabCapture──▶ offscreen document (Web Audio + MediaRecorder)
+Telegram / WhatsApp tab ──tabCapture──▶ offscreen document (Web Audio + MediaRecorder)
                                         │  voice-activity detection → clips
                                         ▼
                                    IndexedDB (audio + metadata)
@@ -103,7 +116,8 @@ web.telegram.org tab ──tabCapture──▶ offscreen document (Web Audio + M
   queues clips, paints the badge. No network access.
 - `offscreen.js` — the recorder. MV3 service workers have no `MediaRecorder`, so an offscreen
   document does the Web Audio routing, VAD splitting and IndexedDB writes.
-- `content.js` — the Telegram dock, and the bridge that posts a clip into the dashboard page.
+- `content.js` — the call dock on Telegram and WhatsApp (including caller-ID reading), and the
+  bridge that posts a clip into the dashboard page.
 - `docs/assets/app.js` handles `postMessage` clips in `importExtensionClip()` and reuses
   `runPipeline()`, so extension clips behave exactly like uploads (history, labels, alerts).
 - `lib/core.js` — the pure logic: settings validation, URL helpers, the VAD segmenter and clarity
@@ -123,16 +137,16 @@ relay clips; the extension reloads/reinjects the bridge when needed.
 | `offscreen` | Host the recorder, which a service worker cannot do. |
 | `storage`, `unlimitedStorage` | Settings and the clip store. |
 | `scripting` | Inject the bridge into an already-open dashboard tab. |
-| Host: `web.telegram.org` | Show the dock and know when a call is in progress. |
+| Host: `web.telegram.org`, `web.whatsapp.com` | Show the dock, read the caller and know when a call is in progress. |
 | Host: the dashboard | Relay clips into the page. |
 
 ## Release
 
-Current version: **1.0.0**. No build step, no dependencies — the folder (or the zip) is the release.
+Current version: **1.1.0**. No build step, no dependencies — the folder (or the zip) is the release.
 
 ```bash
 node --test extension/test/*.test.js                                   # unit tests
-mkdir -p dist && (cd extension && zip -r ../dist/callguard-extension-1.0.0.zip . -x 'test/*' -x 'STORE.md')
+mkdir -p dist && (cd extension && zip -r ../dist/callguard-extension-1.1.0.zip . -x 'test/*' -x 'STORE.md')
 ```
 
 Before uploading:
@@ -140,8 +154,9 @@ Before uploading:
 1. Bump `version` in `manifest.json` and the zip name above; Chrome refuses a repeated version.
 2. Run the unit tests, then load the unpacked extension and press **Settings → Run reliability
    checks**.
-3. Capture a short Telegram call end to end: clip captured → clarity shown → sent → appears in the
-   dashboard's history with a token and alerts.
+3. Capture a short Telegram call and a short WhatsApp call end to end: clip captured → clarity
+   shown → sent → appears in the dashboard's history with a token, the correct source and caller
+   ID, and alerts.
 4. Publish the dashboard with `./deploy.sh` whenever `docs/assets/app.js` changes, so the bridge
    that accepts clips is live before the extension is handed out.
 5. Paste the listing text, permission justifications and data-usage answers from
@@ -178,7 +193,11 @@ before a call starts.
   an explicit extension click for tab audio on some pages. Press the CallGuard toolbar icon and
   start the capture there; the badge shows `GO` until you do.
 - **The call goes silent while capturing?** That means the captured audio isn't being played back;
-  stop and start the capture again. Do not mute the Telegram tab: muting the tab mutes the capture.
+  stop and start the capture again. Do not mute the Telegram or WhatsApp tab: muting the tab mutes
+  the capture.
+- **Caller ID is empty?** The call screen showed no readable contact name when the capture started
+  (WhatsApp's markup is generated, and group calls have no single caller). The clip is still saved
+  with its source; the caller ID can be supplied when analysing an upload in the dashboard.
 - **“Log in to CallGuard…”** The dashboard tab is on the login screen. Log in, then send again.
 - **“CallGuard is busy with another call.”** The dashboard runs one pipeline at a time; the
   extension retries a few times and otherwise leaves the clip in the list for a later send.

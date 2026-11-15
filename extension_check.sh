@@ -180,6 +180,7 @@ for (const perm of ["tabCapture", "activeTab", "audioCapture", "offscreen", "sto
 
 const hosts = Array.isArray(m.host_permissions) ? m.host_permissions : [];
 need(hosts.some((h) => h.indexOf("web.telegram.org") >= 0), "missing the Telegram host permission");
+need(hosts.some((h) => h.indexOf("web.whatsapp.com") >= 0), "missing the WhatsApp host permission");
 need(hosts.some((h) => h.indexOf("github.io") >= 0), "missing the CallGuard dashboard host permission");
 
 need(m.background && m.background.service_worker && exists(m.background.service_worker),
@@ -191,6 +192,8 @@ for (const cs of m.content_scripts || []) {
   for (const js of cs.js || []) need(exists(js), "content script is missing: " + js);
   need((cs.matches || []).some((u) => u.indexOf("web.telegram.org") >= 0),
     "a content script does not match web.telegram.org");
+  need((cs.matches || []).some((u) => u.indexOf("web.whatsapp.com") >= 0),
+    "a content script does not match web.whatsapp.com");
 }
 
 const icons = m.icons || {};

@@ -6,7 +6,12 @@ const assert = require("node:assert/strict");
 const {
   SETTINGS_DEFAULTS,
   normaliseDashboardUrl,
+  platformFor,
+  platformName,
   isTelegramUrl,
+  isWhatsAppUrl,
+  isCallUrl,
+  cleanCaller,
   thresholdFor,
   mergeSettings,
   createSegmenter,
@@ -66,6 +71,38 @@ test("settings: Telegram and mic-related helpers", () => {
   assert.equal(thresholdFor("high"), 0.008);
   assert.equal(thresholdFor("low"), 0.03);
   assert.equal(thresholdFor("other"), 0.015);
+});
+
+test("settings: both call sites are recognised and labelled", () => {
+  assert.equal(platformFor("https://web.telegram.org/k/#-100"), "telegram");
+  assert.equal(platformFor("https://web.whatsapp.com/"), "whatsapp");
+  assert.equal(platformFor("https://web.whatsapp.com" ), "", "a bare host is not a call page");
+  assert.equal(platformFor("https://web.whatsapp.com.evil.test/"), "");
+  assert.equal(platformFor("https://example.test/"), "");
+  assert.equal(platformFor(""), "");
+
+  assert.equal(isTelegramUrl("https://web.telegram.org/a/"), true);
+  assert.equal(isWhatsAppUrl("https://web.whatsapp.com/"), true);
+  assert.equal(isWhatsAppUrl("https://web.telegram.org/a/"), false);
+  assert.equal(isCallUrl("https://web.whatsapp.com/"), true);
+  assert.equal(isCallUrl("https://example.test/"), false);
+  assert.equal(platformName("whatsapp"), "WhatsApp");
+  assert.equal(platformName("telegram"), "Telegram");
+  assert.equal(platformName("other"), "");
+});
+
+test("caller: identities are trimmed, capped and labelled", () => {
+  const c = cleanCaller({ name: "  Asha   Rao ", number: "+91 98765-43210", platform: "whatsapp" });
+  assert.equal(c.name, "Asha Rao");
+  assert.equal(c.number, "+919876543210");
+  assert.equal(c.platform, "whatsapp");
+  assert.equal(c.label, "Asha Rao · +919876543210");
+
+  assert.equal(cleanCaller({ number: "9876543210" }).label, "9876543210");
+  assert.equal(cleanCaller({ name: "Unknown" }).label, "Unknown");
+  assert.equal(cleanCaller({ name: "Unknown", platform: "signal" }).platform, "", "unknown platforms are dropped");
+  assert.deepEqual(cleanCaller(null), { name: "", number: "", platform: "", label: "" });
+  assert.ok(cleanCaller({ name: "x".repeat(200) }).name.length <= 80);
 });
 
 test("settings: recording type falls back to the first supported candidate", () => {

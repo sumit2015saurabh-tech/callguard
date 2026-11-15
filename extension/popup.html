@@ -12,7 +12,7 @@
   </span>
   <div class="who">
     <div class="name">CallGuard</div>
-    <div class="sub">Telegram call capture</div>
+    <div class="sub">Telegram &amp; WhatsApp capture</div>
   </div>
   <span class="pill" id="pill">Idle</span>
 </header>
@@ -21,7 +21,7 @@
   <section class="card">
     <div class="row between"><b id="liveTitle">Not capturing</b><span class="mono" id="timer">0:00</span></div>
     <div class="meter"><span id="level"></span></div>
-    <div class="row between sub"><span id="liveInfo">Open a Telegram call, then capture.</span><span id="clipCount">0 clips</span></div>
+    <div class="row between sub"><span id="liveInfo">Open a Telegram or WhatsApp call, then capture.</span><span id="clipCount">0 clips</span></div>
     <div class="row">
       <button class="btn primary" id="mainBtn">Capture this call</button>
       <button class="btn" id="dashBtn">CallGuard</button>
@@ -32,7 +32,7 @@
   <section class="card">
     <div class="row between"><h2>Captured clips</h2><button class="link" id="sendAll">Send unsent</button></div>
     <ul class="clips" id="clips"></ul>
-    <p class="note" id="empty">No clips yet. Start a capture while a Telegram call is live.</p>
+    <p class="note" id="empty">No clips yet. Start a capture while a Telegram or WhatsApp call is live.</p>
   </section>
 
   <details class="card" id="settings">
@@ -41,7 +41,7 @@
       <input id="dashUrl" type="url" spellcheck="false" autocomplete="off"></label>
     <label class="check"><input type="checkbox" id="autoSend"><span>Send each voice clip to CallGuard while the call is live</span></label>
     <label class="check"><input type="checkbox" id="keepFullCall"><span>Also keep the whole call as one recording</span></label>
-    <label class="check"><input type="checkbox" id="autoStop"><span>Stop when the Telegram call ends</span></label>
+    <label class="check"><input type="checkbox" id="autoStop"><span>Stop when the call ends</span></label>
     <label class="check"><input type="checkbox" id="includeMic"><span>Mix my microphone into the recording (your own voice too)</span></label>
     <label class="check"><input type="checkbox" id="skipUnclear"><span>Don't auto-send clips with poor clarity</span></label>
     <label class="field"><span>Voice detection sensitivity</span>
