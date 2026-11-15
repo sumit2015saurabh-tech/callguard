@@ -441,7 +441,7 @@
       const name = PLATFORM_NAME[platform] || "Call";
       $("#title").textContent = `${name} call`;
       $("#dot").dataset.on = on ? "1" : "0";
-      const mic = on && live.mic ? " · mic on" : "";
+      const mic = !on ? "" : live.mic ? " · both voices" : live.duplex ? " · caller only (mic off)" : "";
       $("#state").textContent = (on
         ? (live.speech ? "Recording · voice detected" : "Recording · quiet")
         : (callActive ? `${name} call detected` : `No ${name} call detected`)) + mic;

@@ -241,3 +241,12 @@ before a call starts.
   microservice URL, and that the clip is 120 seconds or shorter.
 - Recording calls can require everyone's consent. The extension asks once; you remain responsible
   for following the law where you are.
+
+
+## Two-way calls (your voice as Speaker 2)
+
+With **Two-way call** on (the default), the recording is stereo: the caller on the left channel
+(Speaker 1), your microphone on the right (Speaker 2). The transcription service transcribes each side
+separately and labels the turns. The first time you capture, a tab (`mic.html`) asks for the
+microphone once, because the hidden recorder can't show Chrome's prompt; allow it, then press
+**Capture this call** again. If the mic is blocked, the dock and popup say "caller only".

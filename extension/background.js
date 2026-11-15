@@ -39,7 +39,7 @@ function paintBadge() {
   const what = bits.join(" · ");
   chrome.action.setBadgeBackgroundColor({ color: "#c0392b" }).catch(() => {});
   chrome.action.setBadgeText({ text: live.keepFullCall ? "REC" : (n ? String(n) : "REC") }).catch(() => {});
-  chrome.action.setTitle({ title: `CallGuard: capturing · ${what}${live.mic ? " · mic on" : ""}` }).catch(() => {});
+  chrome.action.setTitle({ title: `CallGuard: capturing · ${what}${live.mic ? " · both voices" : ""}` }).catch(() => {});
 }
 
 /** Chrome needs an explicit click on the extension to capture tab audio on some pages. */
@@ -63,6 +63,12 @@ async function ensureOffscreen() {
     }).finally(() => { creating = null; });
   }
   await creating;
+}
+
+/** "granted" | "denied" | "prompt" | "" (unknown) for the extension's microphone access. */
+async function micPermission() {
+  try { return (await navigator.permissions.query({ name: "microphone" })).state; }
+  catch { return ""; }
 }
 
 /** Caller identity is read from the call screen by content.js in the call tab. */
@@ -91,6 +97,17 @@ async function startCapture(tabId) {
   const platform = tab ? core.platformFor(tab.url) : "";
   if (!tab || !platform) {
     return { ok: false, reason: "Open the call in web.telegram.org or web.whatsapp.com, then start the capture there." };
+  }
+
+  /* Two-way calls need the microphone. The hidden recorder can't ask for it, so the first time
+     we open a small page that asks; the user then presses Capture again. */
+  const pre = await getSettings();
+  if (pre.duplex) {
+    const state = await micPermission();
+    if (state === "prompt") {
+      await chrome.tabs.create({ url: chrome.runtime.getURL("mic.html") });
+      return { ok: false, reason: "Allow the microphone in the tab that just opened (once), then press “Capture this call” again so your voice is recorded too." };
+    }
   }
 
   let streamId;
@@ -131,7 +148,7 @@ async function startCapture(tabId) {
     platform, caller,
     startedAt: new Date().toISOString(), clips: 0, parts: 0, partsSent: 0, lastResult: null,
     level: 0, speech: false,
-    mic: !!res.mic, micError: res.micError || "",
+    mic: !!res.mic, micError: res.micError || "", duplex: !!settings.duplex,
   };
   paintBadge();
   return { ok: true, sessionId, mic: !!res.mic, micError: res.micError || "" };
@@ -389,6 +406,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === "cg:live") {
     live = msg.live && msg.live.active ? { ...live, ...msg.live } : { active: false, clips: 0 };
     paintBadge();
+    return;
+  }
+  if (msg.type === "cg:mic-missing") {             // mic failed after all: offer the grant page
+    micPermission().then((state) => {
+      if (state !== "granted") chrome.tabs.create({ url: chrome.runtime.getURL("mic.html"), active: false }).catch(() => {});
+    });
     return;
   }
   if (msg.type === "cg:stopped") {

@@ -78,7 +78,7 @@
     $("#clipCount").textContent = live.keepFullCall
       ? (parts ? `single · ${parts} part${parts === 1 ? "" : "s"}` : "single recording")
       : `${n} clip${n === 1 ? "" : "s"}`;
-    const mic = live.mic ? " · mic mixed" : "";
+    const mic = live.mic ? " · both voices" : live.duplex ? " · caller only (your mic is off)" : "";
     const caller = live.caller && live.caller.label ? ` · caller ${live.caller.label}` : "";
     $("#liveInfo").textContent = on
       ? (live.tabTitle ? `Capturing ${live.tabTitle}${caller}${mic}` : `Capturing the ${core.platformName(live.platform) || "call"} tab${caller}${mic}`)
@@ -87,7 +87,7 @@
     $("#mainBtn").classList.toggle("stop", on);
     $("#mainBtn").disabled = !on && !isCallTab(activeTab) && !callTabs.length;
     $("#note").hidden = !(on && live.micError);
-    $("#note").textContent = on && live.micError ? `Mic unavailable: ${live.micError}` : "";
+    $("#note").textContent = on && live.micError ? `Your voice isn't being recorded: ${live.micError}` : "";
     $("#dashBtn").onclick = () => chrome.tabs.create({ url: (settings && settings.dashboardUrl) || DASH });
   }
 

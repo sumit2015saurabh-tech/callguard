@@ -76,6 +76,7 @@
       speech: !!S.speech,
       keepFullCall: !!(S.session && S.session.keepFullCall),
       mic: !!(S.session && S.session.mic),
+      duplex: !!(S.session && S.session.duplex),
       micError: (S.session && S.session.micError) || "",
       lastClarity: S.lastClarity,
     };
@@ -304,7 +305,10 @@
       S.session.micError = "";
     } catch (e) {
       S.session.mic = false;
-      S.session.micError = (e && e.message) || "Microphone not available";
+      S.session.micError = e && e.name === "NotAllowedError"
+        ? "Chrome blocked the microphone for CallGuard. Allow it in the CallGuard tab that opens, then capture again."
+        : (e && e.message) || "Microphone not available";
+      chrome.runtime.sendMessage({ target: "background", type: "cg:mic-missing" }).catch(() => {});
     }
   }
 
