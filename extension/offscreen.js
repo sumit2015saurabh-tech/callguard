@@ -42,6 +42,11 @@
       stop(msg.reason).then(sendResponse, (e) => sendResponse({ ok: false, reason: (e && e.message) || String(e) }));
       return true;
     }
+    if (msg.type === "cg:set-caller") {          // caller ID found after the capture started
+      if (S.session && msg.caller) S.session.caller = core.cleanCaller(msg.caller);
+      sendResponse({ ok: true });
+      return;
+    }
     if (msg.type === "cg:offscreen-status") sendResponse({ ok: true, live: snapshot() });
   });
 
@@ -272,6 +277,13 @@
     return part.finished;
   }
 
+  /** A gain node that folds whatever it gets into one channel. */
+  function mono(ctx) {
+    const g = ctx.createGain();
+    g.channelCount = 1; g.channelCountMode = "explicit"; g.channelInterpretation = "speakers";
+    return g;
+  }
+
   /* ---------- microphone (recording only, never to the speakers) ---------- */
   async function openMic() {
     try {
@@ -280,10 +292,11 @@
         video: false,
       });
       const micSrc = S.ctx.createMediaStreamSource(mic);
-      const gain = S.ctx.createGain();
+      const gain = mono(S.ctx);
       gain.gain.value = MIC_GAIN;
       micSrc.connect(gain);
-      gain.connect(S.dest);
+      gain.connect(S.merger, 0, 1);                  // right channel = me (Speaker 2)
+      gain.connect(S.analyser);                      // my speech counts for voice detection too
       S.mic = mic;
       S.micSrc = micSrc;
       S.micGain = gain;
@@ -324,11 +337,18 @@
     analyser.fftSize = 1024;
     analyser.smoothingTimeConstant = 0.5;
     src.connect(analyser);
+    /* Two-channel recording: left = the caller (tab audio), right = my microphone. The service
+       transcribes each side on its own, so the transcript says who said what. */
+    const merger = ctx.createChannelMerger(2);
+    const callerMono = mono(ctx);
+    src.connect(callerMono);
+    callerMono.connect(merger, 0, 0);
     const dest = ctx.createMediaStreamDestination();
-    src.connect(dest);                               // recorder input
+    dest.channelCount = 2;
+    merger.connect(dest);                            // recorder input
 
     const settings = msg.settings || {};
-    S.stream = stream; S.ctx = ctx; S.src = src; S.analyser = analyser; S.dest = dest;
+    S.stream = stream; S.ctx = ctx; S.src = src; S.analyser = analyser; S.dest = dest; S.merger = merger;
     S.mime = MIME || "audio/webm";
     S.level = 0; S.speech = false; S.lastClarity = null;
     S.captureStart = Date.now();
@@ -342,7 +362,7 @@
       startedAt: new Date(S.captureStart).toISOString(),
       sensitivity: core.SENSITIVITIES.includes(settings.sensitivity) ? settings.sensitivity : "medium",
       keepFullCall: settings.keepFullCall !== false,
-      includeMic: !!settings.includeMic,
+      duplex: !!settings.duplex,
       mic: false,
       micError: "",
       clips: 0,
@@ -356,7 +376,7 @@
     const track = stream.getAudioTracks()[0];
     if (track) track.addEventListener("ended", () => { stop("tab audio ended"); });
 
-    if (S.session.includeMic) await openMic();
+    if (S.session.duplex) await openMic();
     S.segmenter = core.createSegmenter({ threshold: core.thresholdFor(S.session.sensitivity) });
     /* The whole-call recorder is the recording: it runs from here until stop() and is saved as a
        single file, so a capture never shows up as a series of short clips. */

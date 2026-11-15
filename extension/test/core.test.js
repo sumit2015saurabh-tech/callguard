@@ -41,7 +41,7 @@ test("settings: defaults are complete and merged without surprises", () => {
   const d = mergeSettings();
   assert.equal(d.sensitivity, "medium");
   assert.equal(d.autoSend, false);
-  assert.equal(d.includeMic, false);
+  assert.equal(d.duplex, true);
   assert.equal(d.skipUnclear, true);
   assert.equal(d.keepFullCall, true);
   assert.equal(d.dashboardUrl, SETTINGS_DEFAULTS.dashboardUrl);
@@ -50,8 +50,8 @@ test("settings: defaults are complete and merged without surprises", () => {
   assert.equal(mergeSettings(d, { sensitivity: "max" }).sensitivity, "medium", "unknown sensitivity falls back");
   assert.equal(mergeSettings(d, { autoSend: true }).autoSend, true);
   assert.equal(mergeSettings(d, { autoSend: "yes" }).autoSend, false, "strings are not silently truthy");
-  assert.equal(mergeSettings(d, { includeMic: true, skipUnclear: false }).includeMic, true);
-  assert.equal(mergeSettings(d, { includeMic: true, skipUnclear: false }).skipUnclear, false);
+  assert.equal(mergeSettings(d, { duplex: true, skipUnclear: false }).duplex, true);
+  assert.equal(mergeSettings(d, { duplex: true, skipUnclear: false }).skipUnclear, false);
   assert.equal(mergeSettings(d, { dashboardUrl: "not a url" }).dashboardUrl, d.dashboardUrl, "a bad URL is ignored");
 });
 
@@ -102,7 +102,11 @@ test("caller: identities are trimmed, capped and labelled", () => {
   assert.equal(cleanCaller({ name: "Asha Rao", number: "00 91 98765 43210" }).label, "+919876543210 · Asha Rao");
   assert.equal(cleanCaller({ name: "Unknown" }).label, "Unknown");
   assert.equal(cleanCaller({ name: "Unknown", platform: "signal" }).platform, "", "unknown platforms are dropped");
-  assert.deepEqual(cleanCaller(null), { name: "", number: "", platform: "", label: "" });
+  assert.deepEqual(cleanCaller(null), { name: "", number: "", handle: "", platform: "", label: "" });
+  assert.equal(cleanCaller({ handle: "tg:123456789", platform: "telegram" }).label, "tg:123456789", "Telegram ID when the number is hidden");
+  assert.equal(cleanCaller({ handle: "@scam_desk", name: "Bank Help" }).label, "@scam_desk · Bank Help");
+  assert.equal(cleanCaller({ number: "+14135550123", handle: "tg:1" }).label, "+14135550123", "a number beats the ID");
+  assert.equal(cleanCaller({ handle: "<img onerror=x>" }).handle, "imgonerrorx");
   assert.ok(cleanCaller({ name: "x".repeat(200) }).name.length <= 80);
 });
 

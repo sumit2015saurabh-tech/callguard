@@ -44,7 +44,7 @@
     $("#autoSend").checked = !!s.autoSend;
     $("#keepFullCall").checked = s.keepFullCall !== false;
     $("#autoStop").checked = s.autoStop !== false;
-    $("#includeMic").checked = !!s.includeMic;
+    $("#duplex").checked = !!s.duplex;
     $("#skipUnclear").checked = s.skipUnclear !== false;
     $("#sens").value = s.sensitivity || "medium";
   }
@@ -207,7 +207,7 @@
     $("#autoSend").onchange = () => savePatch({ autoSend: $("#autoSend").checked });
     $("#keepFullCall").onchange = () => savePatch({ keepFullCall: $("#keepFullCall").checked });
     $("#autoStop").onchange = () => savePatch({ autoStop: $("#autoStop").checked });
-    $("#includeMic").onchange = () => savePatch({ includeMic: $("#includeMic").checked });
+    $("#duplex").onchange = () => savePatch({ duplex: $("#duplex").checked });
     $("#skipUnclear").onchange = () => savePatch({ skipUnclear: $("#skipUnclear").checked });
     $("#sens").onchange = () => savePatch({ sensitivity: $("#sens").value });
   }

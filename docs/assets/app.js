@@ -423,6 +423,9 @@ async function dispatchAlerts(rec) {
 
 const mailto = (n) => `mailto:${encodeURIComponent(n.to)}?subject=${encodeURIComponent(n.subject)}&body=${encodeURIComponent(n.body)}`;
 
+/** A two-way call's transcript comes as "Caller: …" / "Receiver: …" turns; show them as speakers. */
+const speakerText = (t) => String(t || "").replace(/^Caller:/gm, "Speaker 1 (caller):").replace(/^Receiver:/gm, "Speaker 2 (you):");
+
 /* ============================== records ============================== */
 function buildRecord({ token, createdAt, fileName, audioType, tr, cls, source, channel, caller }) {
   const code = cls.category;
@@ -430,6 +433,9 @@ function buildRecord({ token, createdAt, fileName, audioType, tr, cls, source, c
   const words = (tr.transcript.match(/\S+/g) || []).length;
   const callerName = String((caller && caller.name) || "").replace(/\s+/g, " ").trim().slice(0, 80);
   const callerNumber = String((caller && caller.number) || "").replace(/\s+/g, " ").trim().slice(0, 24);
+  /* Telegram user ID ("tg:123…") or @username, for callers whose number is hidden. */
+  const callerHandle = String((caller && caller.handle) || "").replace(/[^\w@:.+-]/g, "").slice(0, 40);
+  const callerKey = callerNumber || callerHandle;
   const rec = {
     id: token, token, createdAt, fileName: fileName || "", audioType: audioType || "",
     duration: tr.duration != null ? Number(tr.duration) : null, language: tr.language || "",
@@ -439,9 +445,9 @@ function buildRecord({ token, createdAt, fileName, audioType, tr, cls, source, c
     category: code, categoryName: c.name, isFraud: code !== "F0", isBanking: !!c.banking, risk: tr.risk || c.risk, decision: tr.decision || "",
     confidence: cls.confidence != null ? Number(cls.confidence) : null, scores: cls.scores || null, classifiedBy: cls.by,
     source, channel: CHANNELS[channel] ? channel : "phone",
-    callerName, callerNumber,
-    /* The caller ID is the number that called; the contact name is shown after it. */
-    callerId: callerNumber ? (callerName ? `${callerNumber} · ${callerName}` : callerNumber) : callerName,
+    callerName, callerNumber, callerHandle,
+    /* The caller ID is the number that called (or the platform ID); the contact name is shown after it. */
+    callerId: callerKey ? (callerName ? `${callerKey} · ${callerName}` : callerKey) : callerName,
     labels: tr.labels || [], userLabels: [], notifications: [], reviewed: false, hasAudio: false,
   };
   return rec;
@@ -850,7 +856,7 @@ function renderRun() {
   if (btn) { btn.disabled = !!(r && r.running); btn.innerHTML = r && r.running ? `<span class="spin"></span> Analysing…` : `${icon("wave")}Analyze call`; }
   if (r && r.running && r.partial) {         // transcript arrives first; the fraud verdict follows
     box.innerHTML = `<div class="card card-pad"><div class="row" style="margin-bottom:8px"><span class="spin"></span><h3>Transcript ready. Checking for fraud…</h3></div>
-      <div class="muted" style="white-space:pre-wrap;font-size:14px;line-height:1.55">${esc(r.partial)}</div></div>`;
+      <div class="muted" style="white-space:pre-wrap;font-size:14px;line-height:1.55">${esc(speakerText(r.partial))}</div></div>`;
     return;
   }
   if (!r || r.running) { box.innerHTML = ""; return; }
@@ -1116,7 +1122,7 @@ async function openDrawer(id) {
         </dl>
         ${audioUrl ? `<audio controls src="${audioUrl}" style="width:100%"></audio>` : ""}
         <div class="card card-pad"><div class="lbl" style="margin-bottom:6px">Summary</div><div class="summary">${esc(rec.summary || "No summary returned.")}</div>
-          <div class="lbl" style="margin:14px 0 6px">Transcript</div><div class="quote">${esc(rec.transcript || "No transcript.")}</div></div>
+          <div class="lbl" style="margin:14px 0 6px">Transcript</div><div class="quote">${esc(speakerText(rec.transcript) || "No transcript.")}</div></div>
         <div class="card card-pad"><div class="lbl" style="margin-bottom:8px">Labels</div>
           <div class="row" style="gap:6px">${labelChips(rec)}</div>
           <div class="faint" style="font-size:12px;margin-top:8px">Labels come from the microservice.</div></div>

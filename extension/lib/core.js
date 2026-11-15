@@ -16,7 +16,7 @@
     autoStop: true,
     keepFullCall: true,
     sensitivity: "medium",
-    includeMic: false,
+    duplex: true,                 // two-way call: caller on the left channel, my mic on the right
     skipUnclear: true,
   });
 
@@ -103,12 +103,16 @@
       digits.startsWith("+") ? `+${digits.slice(1).replace(/\+/g, "")}` : digits.replace(/\+/g, "")
     ).slice(0, NUMBER_MAX);
     const platform = Object.prototype.hasOwnProperty.call(PLATFORMS, src.platform) ? src.platform : "";
+    /* A platform ID for when the number is hidden: Telegram user ID ("tg:123456789") or @username. */
+    const handle = String(src.handle == null ? "" : src.handle).trim().replace(/[^\w@:.+-]/g, "").slice(0, 40);
+    const id = number || handle;
     return {
       name,
       number,
+      handle,
       platform,
-      /* The caller ID is the number that called; the saved contact name is only extra context. */
-      label: number ? (name ? `${number} · ${name}` : number) : name,
+      /* The caller ID is the number that called (or the platform ID); the contact name is extra context. */
+      label: id ? (name ? `${id} · ${name}` : id) : name,
     };
   }
 
@@ -121,7 +125,7 @@
     const out = { ...SETTINGS_DEFAULTS, ...(base && typeof base === "object" ? base : {}) };
     const next = patch && typeof patch === "object" ? patch : {};
 
-    for (const key of ["autoSend", "autoStop", "keepFullCall", "includeMic", "skipUnclear"]) {
+    for (const key of ["autoSend", "autoStop", "keepFullCall", "duplex", "skipUnclear"]) {
       out[key] = asBool(next[key], asBool(out[key], SETTINGS_DEFAULTS[key]));
     }
     if (SENSITIVITIES.includes(next.sensitivity)) out.sensitivity = next.sensitivity;

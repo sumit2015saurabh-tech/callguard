@@ -216,7 +216,7 @@ async function sendClipToDashboard(id, opts = {}) {
   /* The caller can be found after the capture started (a call screen takes a moment to paint),
      so fall back to the live caller before giving up on it. */
   const platform = clip.platform || (live.active ? live.platform : "") || core.platformFor(clip.tabUrl) || "";
-  const savedCaller = clip.caller && (clip.caller.name || clip.caller.number) ? clip.caller : null;
+  const savedCaller = clip.caller && (clip.caller.name || clip.caller.number || clip.caller.handle) ? clip.caller : null;
   const caller = core.cleanCaller(savedCaller || (live.active ? live.caller : {}) || {});
   const tab = await findOrOpenDashboard(base, opts.focus);
   const res = await chrome.tabs.sendMessage(tab.id, {
@@ -375,7 +375,7 @@ async function runChecks() {
   checks.push({ name: "Long-call queue", ok: true, detail: settings.autoSend
     ? `${core.CHUNK_SECONDS}s parts, one request at a time, call warning after ${Math.round(core.LONG_CALL_WARN_SEC / 60)} min`
     : `idle until auto-send is on (${core.CHUNK_SECONDS}s parts)` });
-  checks.push({ name: "Microphone mixing", ok: true, detail: settings.includeMic ? `on (gain 0.8) — Chrome asks once` : "off (optional)" });
+  checks.push({ name: "Two-way recording", ok: true, detail: settings.duplex ? `on: caller left, my mic right (Speaker 2)` : "off: caller only" });
   checks.push({ name: "Clarity gate", ok: true, detail: settings.skipUnclear ? "poor clips are not auto-sent" : "off — every clip is auto-sent" });
 
   return { ok: true, checks };
@@ -401,6 +401,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === "cg:caller") {
     if (msg.caller && live.active && sender.tab && sender.tab.id === live.tabId) {
       live.caller = core.cleanCaller({ ...msg.caller, platform: live.platform });
+      /* Clips and the whole-call file are saved with the recorder's copy, so update it too. */
+      chrome.runtime.sendMessage({ target: "offscreen", type: "cg:set-caller", caller: live.caller }).catch(() => {});
       paintBadge();
     }
     return;

@@ -126,6 +126,40 @@
     return "";
   }
 
+  /* Stable IDs the apps keep in the page. They work for unknown callers whose number isn't shown:
+     WhatsApp chat IDs are "<number>@c.us"; Telegram avatars carry the peer's user ID. */
+  function whatsappNumber() {
+    const seen = {};
+    for (const sel of ['[data-testid="call-screen" i] [data-id]', '[class*="call" i] [data-id]', "#main [data-id]",
+                       '[data-testid="conversation-panel-wrapper"] [data-id]']) {
+      let found;
+      try { found = document.querySelectorAll(sel); } catch { continue; }
+      for (const el of found) {
+        const m = String(el.getAttribute("data-id")).match(/(?:^|_)(\d{7,15})@c\.us(?:_|$)/);
+        if (m) seen[m[1]] = (seen[m[1]] || 0) + 1;
+      }
+      const best = Object.keys(seen).sort((a, b) => seen[b] - seen[a])[0];
+      if (best) return `+${best}`;
+    }
+    return "";
+  }
+
+  function telegramHandle() {
+    for (const panel of callPanels()) {           // the call screen's avatar names the peer
+      const av = panel.querySelector("[data-peer-id]");
+      const id = av && String(av.getAttribute("data-peer-id"));
+      if (id && /^\d{3,15}$/.test(id)) return `tg:${id}`;
+    }
+    const hash = decodeURIComponent(location.hash.replace(/^#/, ""));   // open chat: #123456789 or #@user
+    if (/^\d{3,15}$/.test(hash)) return `tg:${hash}`;
+    if (/^@[A-Za-z]\w{3,31}$/.test(hash)) return hash;
+    for (const el of document.querySelectorAll('#column-right [class*="username" i], .Profile [class*="username" i], #RightColumn [class*="username" i]')) {
+      const m = String(el.textContent).match(/@[A-Za-z]\w{3,31}/);
+      if (m) return m[0];
+    }
+    return "";
+  }
+
   function findCaller() {
     const texts = [];
     for (const panel of callPanels()) {
@@ -156,10 +190,13 @@
     }
     /* The call screen often shows only the saved contact's name, so look for the calling number
        separately and let it lead the caller ID. */
+    if (platform === "whatsapp") caller.number = whatsappNumber() || caller.number;   // exact chat number first
     if (!caller.number) caller.number = findNumber();
+    caller.handle = platform === "telegram" ? telegramHandle() : "";
+    const id = caller.number || caller.handle;
     return {
       ...caller,
-      label: caller.number ? (caller.name ? `${caller.number} · ${caller.name}` : caller.number) : caller.name,
+      label: id ? (caller.name ? `${id} · ${caller.name}` : id) : caller.name,
     };
   }
 
@@ -168,7 +205,7 @@
     if (!msg) return;
     if (msg.type === "cg:ping") { sendResponse({ ok: true, platform, telegram: platform === "telegram" }); return; }
     if (msg.type === "cg:caller-info") {
-      sendResponse({ ok: true, platform, caller: onCallSite ? findCaller() : { name: "", number: "", label: "" } });
+      sendResponse({ ok: true, platform, caller: onCallSite ? findCaller() : { name: "", number: "", handle: "", label: "" } });
       return;
     }
     if (msg.type !== "cg:dashboard-import") return;
@@ -375,7 +412,7 @@
         const found = findCaller();
         if (found.label && found.label !== caller.label) {
           caller = found;
-          send({ type: "cg:caller", caller: { name: found.name, number: found.number } });
+          send({ type: "cg:caller", caller: { name: found.name, number: found.number, handle: found.handle } });
         }
       }
       if (live.active && callActive) callSeen = true;
