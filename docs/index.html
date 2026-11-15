@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="assets/styles.css?v=20261115021756">
+<link rel="stylesheet" href="assets/styles.css?v=20261115022342">
 </head>
 <body>
 <noscript><div style="padding:40px;text-align:center;font-family:sans-serif">CallGuard needs JavaScript. Please enable it and reload.</div></noscript>
@@ -27,7 +27,7 @@
      Checked on load, every 5 minutes and when the tab comes back into view (a tab left open for days
      would otherwise keep running old code); never while a call is being analysed or recorded. */
   (function () {
-    var BUILD = "20261115021756";
+    var BUILD = "20261115022342";
     function check() {
       try {
         fetch("version.json?t=" + Date.now(), { cache: "no-store" }).then(function (r) { return r.json(); }).then(function (j) {
@@ -135,8 +135,8 @@
     <symbol id="i-chev" viewBox="0 0 24 24"><path d="M6 9.5l6 6 6-6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
   </defs>
 </svg>
-<script src="assets/config.js?v=20261115021756"></script>
-<script src="assets/data.js?v=20261115021756"></script>
-<script src="assets/app.js?v=20261115021756"></script>
+<script src="assets/config.js?v=20261115022342"></script>
+<script src="assets/data.js?v=20261115022342"></script>
+<script src="assets/app.js?v=20261115022342"></script>
 </body>
 </html>

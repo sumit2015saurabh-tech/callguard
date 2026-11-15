@@ -465,3 +465,4 @@ img.avatar { object-fit: cover; }
   .auth-cols { grid-template-columns: 1fr; width: min(460px, 100%); }
   .auth-pitch { display: none; }
 }
+.banner.good { background: var(--good-soft); color: var(--good-ink); }

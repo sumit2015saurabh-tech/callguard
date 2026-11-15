@@ -245,7 +245,24 @@ const S = {
   pending: null,          // audio chosen on the Analyze page
 };
 const saveSettings = () => { LS.set("settings", S.settings); paintChrome(); };
-const saveContacts = () => LS.set("contacts", S.contacts);
+const saveContacts = () => { LS.set("contacts", S.contacts); syncAlertContacts(); };
+
+/** Give the CallGuard server a copy of the alert contacts, so it emails them by itself the moment a call
+    is flagged as fraud (even if this tab is closed or out of date). Server accounts only. */
+async function syncAlertContacts() {
+  if (cloud !== srv || !srv.token()) return false;
+  const C = S.contacts;
+  let tz = "UTC"; try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; } catch { /* old browser */ }
+  const body = { user: { name: C.user.name || S.user?.name || "", email: C.user.email || S.user?.email || "", phone: C.user.phone || "" },
+    nominee: C.nominee, bank: { name: C.bank.name, email: C.bank.email }, emergency: C.emergency, tz,
+    authorised: (C.authorised || []).filter((a) => isEmail(a.email)).map((a) => ({ name: a.name, email: a.email, relation: a.relation || "" })) };
+  try {
+    await fetchJSON(srv.url + "/v1/alert-contacts", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${srv.token()}` }, body: JSON.stringify(body) });
+    const was = S.contactsSynced; S.contactsSynced = Date.now();
+    if (!was && location.hash.startsWith("#/contacts") && !document.activeElement?.matches?.("input")) route();
+    return true;
+  } catch (e) { S.contactsSynced = 0; console.warn("CallGuard: couldn't copy alert contacts to the server", e); return false; }
+}
 
 /* ============================== services ============================== */
 function normCategory(v) {
@@ -307,6 +324,7 @@ function normalise(raw) {
     scores: pick("scores", "probabilities"),
     // "report:<ticket>" = signed single-use ticket to add this caller to the shared fraud-caller list; not a label
     reportTicket: kv.report || "",
+    serverAlerts: raw.alerts && typeof raw.alerts === "object" ? raw.alerts : null,
     labels: toLabels(pick("labels", "tags", "call_labels", "classes")).filter((l) => !/^report:/i.test(l)),
   };
 }
@@ -378,16 +396,16 @@ async function fetchJSON(url, opts) {
 
 const services = {
   /** Send the uploaded audio to the microservice. Its JSON reply carries transcript, summary and the fraud category. */
-  async analyse(blob, fileName, token, onWait, onTranscript) {
+  async analyse(blob, fileName, token, onWait, onTranscript, extra = {}) {
     if (!blob) throw new ServiceError("No audio.", "Upload an audio file or record a call first.");
     if (!S.settings.transcriberUrl) throw new ServiceError("Microservice not connected.", "Add its URL in Settings → Microservice.");
     if (cloud.on) { if (!(await cloud.fresh())) throw new ServiceError("Your sign-in expired.", "Log out and log in again, then retry."); }
     else if (!String(S.settings.apiKey || "").trim()) throw new ServiceError("API token missing.", "The microservice only accepts requests with your API token. Paste it in Settings → Microservice.");
     const fd = new FormData();
     fd.append(CFG.audioField || "audio", blob, fileName || "call.webm");   // exactly one field: the service rejects extras
-    let raw = await this.viaJobs(fd, onWait, onTranscript);           // queued: many users at once, live position
+    let raw = await this.viaJobs(fd, onWait, onTranscript, extra);           // queued: many users at once, live position
     for (let attempt = 1; !raw; attempt++) {           // older service without a jobs API: direct call
-      try { raw = await fetchJSON(S.settings.transcriberUrl, { method: "POST", body: fd, headers: authHeaders() }); break; }
+      try { raw = await fetchJSON(S.settings.transcriberUrl, { method: "POST", body: fd, headers: { ...authHeaders(), ...extra } }); break; }
       catch (e) {
         if (e.status !== 429 || attempt > 3) throw e;
         const wait = Math.min(30, Math.max(5, e.retryAfter || 10));
@@ -410,14 +428,14 @@ const services = {
   },
   /** Submit to POST /v1/jobs and poll GET /v1/jobs/{id}. Returns the result JSON, or null if the
    *  service has no jobs API (then the caller uses the direct endpoint). */
-  async viaJobs(fd, onWait, onTranscript) {
+  async viaJobs(fd, onWait, onTranscript, extra = {}) {
     const url = S.settings.transcriberUrl;
     if (!/\/v1\/audio\/analyze\/?$/.test(new URL(url).pathname)) return null;
     const base = new URL(url).origin + "/v1/jobs";
     const say = (m) => onWait && onWait(m);
     let job;
     for (let attempt = 1; ; attempt++) {
-      try { job = await fetchJSON(base, { method: "POST", body: fd, headers: authHeaders() }); break; }
+      try { job = await fetchJSON(base, { method: "POST", body: fd, headers: { ...authHeaders(), ...extra } }); break; }
       catch (e) {
         if (e.status === 404 || e.status === 405) return null;
         if (!(e.status === 503 && /waiting/i.test(e.detail || e.message)) || attempt > 10) throw e;
@@ -504,7 +522,7 @@ const notifyUrl = () => String(S.settings.notifierUrl || window.CG_CONFIG?.notif
 /** Who gets told, per the routing rules. Returns notification objects (not yet sent). */
 function planAlerts(rec, C = S.contacts) {
   const out = [];
-  if (!rec.isFraud) return out;
+  if (!rec.isFraud || (rec.decision && rec.decision !== "fraud")) return out;   // fraud only: not for "uncertain"
   const who = [rec.callerNumber || rec.callerHandle, rec.callerName].filter(Boolean)[0];
   const subject = `⚠ ${rec.isBanking ? "Banking fraud" : "Fraud"} alert: ${CATS[rec.category].name}${who ? ` from ${who}` : ""} (${rec.token})`;
   const body = warningText(rec);
@@ -533,9 +551,23 @@ function planAlerts(rec, C = S.contacts) {
   return out.filter((n) => { if (n.channel !== "email" || !n.to) return true; const k = n.to.toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true; });
 }
 
+/** The server already emailed these people the moment it flagged the call: record that, don't send again. */
+function applyServerAlerts(rec, sa) {
+  if (!sa || sa.status !== "done" || !Array.isArray(sa.results)) return;
+  for (const r of sa.results) {
+    const to = String(r.to || "").toLowerCase();
+    for (const n of rec.notifications || []) {
+      if (n.channel !== "email" || String(n.to || "").toLowerCase() !== to || !["pending", "queued", "failed"].includes(n.status)) continue;
+      n.status = r.status === "sent" ? "sent" : "failed";
+      n.reason = r.status === "sent" ? "Sent automatically by the CallGuard server" : (r.reason || "The server couldn't send it");
+      n.byServer = true;
+    }
+  }
+}
+
 async function dispatchAlerts(rec, { quiet = false } = {}) {
   for (const n of rec.notifications) {
-    if (n.status !== "pending") continue;
+    if (n.status !== "pending") continue;   // includes emails the server already sent
     try {
       n.status = await services.notify(n, rec);
     } catch (e) { n.status = "failed"; n.reason = e.message; }
@@ -1103,8 +1135,15 @@ async function runPipeline(blob, fileName, opts = {}) {
     if (secs != null && secs > maxSecs + 0.5) throw new ServiceError("Recording is too long.", `It is ${fmtDur(secs)} long. The microservice accepts up to ${fmtDur(maxSecs)}. Trim it and try again.`);
     set("upload", "done", `${fileName} · ${(blob.size / 1024).toFixed(0)} KB${secs != null ? ` · ${fmtDur(secs)}` : ""}`);
     cur = "transcribe"; set("transcribe", "active", "Sending audio to your microservice…");
+    /* Caller + call session go with the recording, so the server's automatic fraud email can name the
+       caller and email each call only once (a live call arrives in several parts). */
+    const cl = opts.caller || {};
+    const callerHdr = [cl.number || cl.handle, cl.name].map((x) => String(x || "").trim()).filter(Boolean).join(" ").slice(0, 80);
+    const extra = {};
+    if (callerHdr) extra["X-Caller"] = encodeURIComponent(callerHdr);
+    if (opts.sessionId) extra["X-Call-Session"] = String(opts.sessionId).replace(/[^\w.-]/g, "").slice(0, 80);
     const tr = await services.analyse(blob, fileName, token, (note) => set("transcribe", "active", note),
-      (text) => { S.run.partial = text; renderRun(); });
+      (text) => { S.run.partial = text; renderRun(); }, extra);
     if (tr.duration == null) tr.duration = secs;
     set("transcribe", "done", [tr.transcript ? `${(tr.transcript.match(/\S+/g) || []).length} words` : "", tr.summary ? "summary received" : "no summary", tr.labels.length ? `${tr.labels.length} labels` : ""].filter(Boolean).join(" · "));
     cur = "classify";
@@ -1127,6 +1166,7 @@ async function runPipeline(blob, fileName, opts = {}) {
     await saveRecord(rec, null);
     set("label", "done", `${rec.labels.length} labels · saved${S.dir ? " + history folder" : ""}${rec.priorFlag && rec.priorFlag.flagged ? ` · repeat fraud caller (${rec.priorFlag.reports}× before)` : ""}`);
     cur = "alert"; set("alert", "active");
+    applyServerAlerts(rec, tr.serverAlerts);
     await dispatchAlerts(rec);
     await saveRecord(rec, null);
     const n = alertCount(rec);
@@ -1422,7 +1462,8 @@ VIEWS.contacts = (root) => {
   };
   const nomineeReady = !!(C.nominee.name || C.nominee.email);
   root.innerHTML = `
-    <p class="section-intro">Tell CallGuard who to warn. Every fraud is emailed to your nominee, your authorised people and your emergency contact. Banking fraud is also emailed to the bank your nominee adds.</p>
+    <p class="section-intro">Tell CallGuard who to warn. Every fraud call is emailed automatically, the moment it's flagged, to your nominee, your authorised people and your emergency contact. Banking fraud is also emailed to the bank your nominee adds. Calls that aren't fraud send nothing.</p>
+    ${cloud === srv ? `<div class="banner ${S.contactsSynced ? "good" : "warn"}" style="margin-bottom:14px">${icon(S.contactsSynced ? "check" : "alert")}<div>${S.contactsSynced ? "The CallGuard server has your latest contacts: alerts go out even if this tab is closed." : "Your contacts aren't on the CallGuard server yet. Click Save on any card (or check your connection)."}</div></div>` : ""}
     <div class="grid g-2">
       <div class="card contact-card"><div class="c-head"><span class="c-icon">${icon("users")}</span><div><h3>You (account holder)</h3><div class="faint" style="font-size:12.5px">Shown in alerts so people know whose call it was</div></div></div>
         <div class="form-grid">${inp("user.name", "Full name", "text", "Your name")}${inp("user.email", "Email", "email", "you@example.com")}${inp("user.phone", "Phone", "tel", "+1 …")}</div></div>
@@ -2086,7 +2127,7 @@ async function startApp(user, fresh = false) {
   paintChrome();
   route();
   if (fresh) toast(`Welcome, ${user.name.split(" ")[0]}`, "shield");
-  setTimeout(() => sendStuckAlerts().catch(() => {}), 3000);
+  setTimeout(() => { syncAlertContacts(); sendStuckAlerts().catch(() => {}); }, 3000);
 }
 
 /* Busy = analysing or recording: the update check (index.html) waits instead of reloading the page. */
