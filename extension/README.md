@@ -1,10 +1,10 @@
 # CallGuard capture extension (Telegram & WhatsApp Web)
 
 A Manifest V3 Chrome extension that records the audio of a **live Telegram Web or WhatsApp Web
-call** and sends each spoken segment ("voice clip") into the **CallGuard dashboard**, where it
-runs through the normal pipeline: microservice → transcript, summary and fraud category →
-history → alert routing. Each clip also carries the **source of the call** (Telegram or WhatsApp)
-and the **caller ID** read from the call screen.
+call** and sends the recording into the **CallGuard dashboard**, where it runs through the normal
+pipeline: microservice → transcript, summary and fraud category → history → alert routing. Each
+recording also carries the **source of the call** (Telegram or WhatsApp) and the **caller ID** read
+from the call screen.
 
 The extension has no build step, no runtime dependencies and makes no network requests of its
 own. Privacy: [`PRIVACY.md`](PRIVACY.md). Current release: **1.1.0** (Manifest V3).
@@ -29,13 +29,18 @@ it to the Chrome Web Store.
    **Capture this call** there. The first time you are asked to confirm that everyone on the call
    agrees to being recorded.
 3. Speak normally. The extension plays the captured audio back through your speakers (Chrome mutes
-   a captured tab, so this keeps the call audible) and starts a clip whenever a voice is detected.
-   A pause of about a second closes the clip; long speech is split into 40-second clips.
-4. Clips are listed in the popup with playback, download and delete. Press
-   **Analyze in CallGuard** on a clip, or **Send unsent** for all of them, and the dashboard opens,
-   analyzes the clip and saves it to history with a token and the usual alerts.
-5. Turn on **Send each voice clip to CallGuard while the call is live** (Settings) to have every
-   clip analyzed as soon as it is captured, so alerts fire during the call rather than after it.
+   a captured tab, so this keeps the call audible) and records the call as **one continuous file**
+   from the moment you press capture until you stop. Turn off *Record the whole call as one
+   continuous file* in Settings to get a separate short clip per utterance instead (a pause of
+   about a second closes a clip, and long speech is split at 40 seconds).
+4. The recording is listed in the popup with playback, download and delete. Press
+   **Analyze in CallGuard**, or **Send unsent** for everything, and the dashboard opens, analyzes it
+   and saves it to history with a token and the usual alerts. The microservice accepts at most
+   120 seconds per request, so a whole-call file longer than that must be trimmed (or captured as
+   short clips) before it can be analyzed; it can always be downloaded.
+5. Turn on **Send to CallGuard automatically** (Settings) to have each recording handed over as
+   soon as it is ready — a clip while the call is live, the whole-call file when you stop — so
+   alerts fire without waiting.
 
 **Stop** from the dock or the popup. With **Stop when the call ends** on, a capture also ends by
 itself a few seconds after the call UI disappears.
@@ -52,13 +57,14 @@ a name it records the clip with the source and an empty caller ID rather than gu
 
 ## What is recorded
 
-- The **other party's voice**, taken from the Telegram or WhatsApp tab's audio, split into voice clips.
+- The **other party's voice**, taken from the Telegram or WhatsApp tab's audio, as one continuous
+  recording per capture (or as separate voice clips, when the whole-call file is switched off).
 - Your own voice too, when **Mix my microphone into the recording** is on (Settings). The mic is
   mixed in at 0.8 gain so the caller stays dominant, and it is **only** sent to the recorder — never
   played back through the speakers, which would cause feedback in the call.
-- Optionally the whole call as one separate recording (Settings → *Also keep the whole call*). That
-  file is for download only; it is never sent to the microservice, because the service accepts at
-  most 120 seconds per request.
+- The whole-call file is never split: one file spans the capture from start to stop. The microservice
+  accepts at most 120 seconds per request, so a longer call must be trimmed (or captured as short
+  clips) before it can be analyzed; it can always be downloaded.
 
 Everything is stored in the extension's IndexedDB on this device. Nothing is uploaded by the
 extension itself: a clip only leaves the browser when you send it to CallGuard, and CallGuard
@@ -66,10 +72,10 @@ uploads it with your signed-in session (or API token) exactly like a manual uplo
 
 ## Clarity
 
-Every **voice clip** (up to 40 s) is decoded and measured before it is stored, so a useless
-recording is visible instead of silently producing a bad transcript. The whole-call file is skipped
-— decoding 45 minutes of audio only to score it would cost far more memory than it is worth. Each
-voice clip gets a **0–100 clarity score** and a verdict:
+Every **voice clip** (up to 40 s, i.e. when the whole-call file is switched off) is decoded and
+measured before it is stored, so a useless recording is visible instead of silently producing a bad
+transcript. The whole-call file is skipped — decoding 45 minutes of audio only to score it would
+cost far more memory than it is worth. Each voice clip gets a **0–100 clarity score** and a verdict:
 
 | Verdict | Score | What it means |
 |---|---|---|
@@ -86,22 +92,22 @@ runs on the actual recorded audio, so mic mixing and tab volume are reflected in
 
 | Setting | Default | What it does |
 |---|---|---|
-| CallGuard dashboard URL | the public dashboard | Where clips are handed over. Another host asks for site access the first time. |
-| Send each voice clip while the call is live | off | Analyzes every new clip automatically (queued, one at a time). |
-| Also keep the whole call as one recording | on | Saves one `…-call.webm` for evidence/download. |
+| CallGuard dashboard URL | the public dashboard | Where recordings are handed over. Another host asks for site access the first time. |
+| Send to CallGuard automatically | off | Hands each recording over as soon as it is ready (queued, one at a time). |
+| Record the whole call as one continuous file | on | One `…-call.webm` per capture. Uncheck for a short clip per utterance. |
 | Stop when the call ends | on | Ends the capture shortly after the call UI disappears. |
 | Mix my microphone into the recording | off | Adds your own voice to every clip (recording only). |
 | Don't auto-send clips with poor clarity | on | Keeps quiet or clipped clips locally until you send them. |
 | Voice detection sensitivity | medium | Lower thresholds pick up quieter speech; raise it in a noisy room. |
 
-The toolbar badge shows `REC` and the clip count while capturing, and `GO` if Chrome wants the
-capture started from the icon (see below).
+The toolbar badge shows `REC` while capturing (or the clip count when you record a clip per
+utterance), and `GO` if Chrome wants the capture started from the icon (see below).
 
 ## How it works
 
 ```
 Telegram / WhatsApp tab ──tabCapture──▶ offscreen document (Web Audio + MediaRecorder)
-                                        │  voice-activity detection → clips
+                                        │  one continuous recording (VAD only for the meter)
                                         ▼
                                    IndexedDB (audio + metadata)
                                         │
@@ -115,7 +121,8 @@ Telegram / WhatsApp tab ──tabCapture──▶ offscreen document (Web Audio 
 - `background.js` — service worker: starts/stops the capture, finds or opens the dashboard tab,
   queues clips, paints the badge. No network access.
 - `offscreen.js` — the recorder. MV3 service workers have no `MediaRecorder`, so an offscreen
-  document does the Web Audio routing, VAD splitting and IndexedDB writes.
+  document does the Web Audio routing, the recording (one continuous file, or VAD clips) and the
+  IndexedDB writes.
 - `content.js` — the call dock on Telegram and WhatsApp (including caller-ID reading), and the
   bridge that posts a clip into the dashboard page.
 - `docs/assets/app.js` handles `postMessage` clips in `importExtensionClip()` and reuses

@@ -8,7 +8,7 @@ Version **1.0.0** · Manifest V3 · package `dist/callguard-extension-1.0.0.zip`
 **Name:** CallGuard — Telegram call capture
 
 **Short description (132 characters max):**
-Capture the audio of a live Telegram Web call, split it into voice clips, and send them to CallGuard for scam analysis.
+Capture the audio of a live Telegram Web call and send the recording to CallGuard for scam analysis.
 
 **Category:** Productivity
 **Language:** English
@@ -26,12 +26,12 @@ the bank fraud desk, a nominee, authorised contacts, or the emergency contact.
 WHAT IT DOES
 
 - A small dock appears on web.telegram.org and detects when a call is in progress.
-- One click captures the call's audio, keeps the call audible, and splits speech into voice clips.
+- One click captures the call's audio, keeps the call audible, and records it as one continuous file.
 - Every clip is scored for clarity, so quiet, clipped or mostly-silent recordings are flagged
   instead of wasting an analysis.
-- Send clips to CallGuard as they happen, or all at once afterwards.
-- Optional: mix in your own microphone, keep one recording of the whole call, and stop
-  automatically when the call ends.
+- Send recordings to CallGuard as they happen, or all at once afterwards.
+- Optional: mix in your own microphone, record a short clip per utterance instead of one file, and
+  stop automatically when the call ends.
 
 WHAT IT DOES NOT DO
 

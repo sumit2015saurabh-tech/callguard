@@ -6,8 +6,8 @@ CallGuard dashboard you are signed in to. This page describes exactly what that 
 ## What is recorded
 
 - Audio of the Telegram tab, from the moment you press **Capture this call** until you press
-  **Stop** (or the call ends, when automatic stop is on). It is split into voice clips, with an
-  optional single whole-call file.
+  **Stop** (or the call ends, when automatic stop is on). It is saved as one continuous recording
+  per capture, or as separate short clips when the whole-call file is switched off.
 - Your microphone, **only** if you turn on *Mix my microphone into the recording*. It is mixed into
   the recording and never played back. The setting is off by default.
 
@@ -19,8 +19,8 @@ delete each clip in the popup, and uninstalling the extension removes the store.
 
 ## What leaves the device, and when
 
-Nothing is transmitted while recording. A clip is sent only when you press **Analyze in CallGuard**
-or **Send unsent**, or when you enable *Send each voice clip to CallGuard while the call is live*.
+Nothing is transmitted while recording. A recording is sent only when you press **Analyze in CallGuard**
+or **Send unsent**, or when you enable *Send to CallGuard automatically*.
 In that case the clip goes to the CallGuard dashboard tab you are signed in to, which uploads it to
 the CallGuard microservice for transcription and fraud classification. From there, the dashboard's
 own privacy and retention rules apply.

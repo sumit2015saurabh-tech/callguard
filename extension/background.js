@@ -33,9 +33,10 @@ function paintBadge() {
     return;
   }
   const n = Number(live.clips || 0);
+  const what = live.keepFullCall ? "one continuous recording" : `${n} voice clip${n === 1 ? "" : "s"}`;
   chrome.action.setBadgeBackgroundColor({ color: "#c0392b" }).catch(() => {});
-  chrome.action.setBadgeText({ text: n ? String(n) : "REC" }).catch(() => {});
-  chrome.action.setTitle({ title: `CallGuard: capturing · ${n} voice clip${n === 1 ? "" : "s"}${live.mic ? " · mic on" : ""}` }).catch(() => {});
+  chrome.action.setBadgeText({ text: live.keepFullCall ? "REC" : (n ? String(n) : "REC") }).catch(() => {});
+  chrome.action.setTitle({ title: `CallGuard: capturing · ${what}${live.mic ? " · mic on" : ""}` }).catch(() => {});
 }
 
 /** Chrome needs an explicit click on the extension to capture tab audio on some pages. */
@@ -201,7 +202,6 @@ async function ensureBridge(tabId, base) {
 async function sendClipToDashboard(id, opts = {}) {
   const clip = await store.clip(id);
   if (!clip) throw new Error("That clip isn't saved any more.");
-  if (clip.kind === "call") throw new Error("The whole-call recording is for downloading; send a voice clip instead.");
   const blob = await store.blob(id);
   if (!blob) throw new Error("The audio for that clip was deleted.");
 
@@ -268,7 +268,7 @@ async function pump() {
 
 async function sendAll() {
   const clips = (await store.clips())
-    .filter((c) => c.kind === "voice" && !c.result && !c.queuedAt)
+    .filter((c) => !c.result && !c.queuedAt)
     .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
   for (const c of clips) await enqueue(c.id);
   return { ok: true, queued: clips.length };
@@ -356,7 +356,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   if (msg.type === "cg:clip-added") {
     (async () => {
-      if (!msg.clip || msg.clip.kind !== "voice") return;
+      if (!msg.clip) return;
       const settings = await getSettings();
       if (!settings.autoSend) return;
       /* A clip too unclear to transcribe is kept locally, not auto-sent. Manual send still works. */

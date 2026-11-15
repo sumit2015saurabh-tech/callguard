@@ -74,7 +74,7 @@
     $("#liveTitle").textContent = on ? (live.speech ? "Recording · voice detected" : "Recording · quiet") : "Not capturing";
     $("#timer").textContent = fmtDur(on && live.startedAt ? (Date.now() - Date.parse(live.startedAt)) / 1000 : 0);
     $("#level").style.width = `${Math.round((live.level || 0) * 100)}%`;
-    $("#clipCount").textContent = `${n} clip${n === 1 ? "" : "s"}`;
+    $("#clipCount").textContent = live.keepFullCall ? "single recording" : `${n} clip${n === 1 ? "" : "s"}`;
     const mic = live.mic ? " · mic mixed" : "";
     const caller = live.caller && live.caller.label ? ` · caller ${live.caller.label}` : "";
     $("#liveInfo").textContent = on
@@ -110,7 +110,7 @@
       : "";
     li.innerHTML = `
       <div class="row between">
-        <span class="title">${esc(clock(c.createdAt))} <span class="sub">· ${esc(fmtDur(c.duration))} · ${esc(kb(c.size))}${c.kind === "call" ? " · whole call" : ""}${c.mic ? " · mic" : ""}</span></span>
+        <span class="title">${esc(clock(c.createdAt))} <span class="sub">· ${esc(fmtDur(c.duration))} · ${esc(kb(c.size))}${c.kind === "call" ? " · whole call" : " · clip"}${c.mic ? " · mic" : ""}</span></span>
         <span class="chip ${st.cls}">${esc(st.text)}</span>
       </div>
       ${c.result ? `<div class="sub">${esc(resultLine(c.result))}</div>` : ""}
@@ -118,7 +118,7 @@
       ${clarity}
       <audio controls preload="none"></audio>
       <div class="actions">
-        ${c.kind === "voice" ? `<button class="btn sm" data-act="send">Analyze in CallGuard</button>` : ""}
+        <button class="btn sm" data-act="send">Analyze in CallGuard</button>
         <button class="btn sm" data-act="download">Download</button>
         <button class="btn sm ghost" data-act="delete">Delete</button>
       </div>`;

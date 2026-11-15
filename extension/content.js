@@ -342,14 +342,14 @@
         : (callActive ? `${name} call detected` : `No ${name} call detected`)) + mic;
       $("#caller").hidden = !caller.label;
       $("#caller").textContent = caller.label ? `Caller: ${caller.label}` : "";
-      $("#clips").textContent = `${n} clip${n === 1 ? "" : "s"}`;
+      $("#clips").textContent = live.keepFullCall ? "one recording" : `${n} clip${n === 1 ? "" : "s"}`;
       $("#lvl").style.width = `${Math.round((live.level || 0) * 100)}%`;
       $("#btn").textContent = on ? "Stop capture" : "Capture this call";
       $("#btn").classList.toggle("stop", on);
       $("#btn").disabled = busy;
       $("#confirm").hidden = !confirming;
       $("#hint").innerHTML = hint ? `<b>${esc(hint)}</b>`
-        : on ? "Each voice clip is saved in the extension; send them from the CallGuard popup or automatically."
+        : on ? "The call is saved in the extension as one recording; send it from the CallGuard popup or automatically."
              : "The other party's voice is captured from the tab. Nothing is sent anywhere until you send it.";
       $("#dash").href = (settings && settings.dashboardUrl) || "https://sumit2015saurabh-tech.github.io/callguard/";
       $("#auto").textContent = live.active && settings && settings.autoSend ? "auto-send on" : "";

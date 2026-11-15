@@ -4,10 +4,11 @@
    The tab's audio is
      1. played back through the speakers (tab capture mutes the tab, so without this the call goes silent),
      2. optionally mixed with the microphone (recording only — the mic is never played back),
-     3. recorded as a clip whenever somebody speaks (voice activity detection), and
+     3. recorded as one continuous file from capture start to stop — voice activity detection only
+        drives the live meter (or, with the whole-call file switched off, a clip per utterance), and
      4. scored for clarity, so an unusable clip is visible instead of silently useless.
 
-   Clips are written to IndexedDB; this document never talks to the network. */
+   Recordings are written to IndexedDB; this document never talks to the network. */
 (() => {
   "use strict";
   const store = self.CGStore;
@@ -143,8 +144,12 @@
       S.level = Math.min(1, rms * 9);
       const act = S.segmenter.step(rms, Date.now());
       S.speech = act.loud;
-      if (act.open) openSegment(act.open.startedAt);
-      if (act.close) closeSegment(act.close);
+      /* One continuous recording per call: with the whole-call recorder running, a pause must never
+         chop the call into a new file. Speech detection still lights the meter in the dock. */
+      if (!S.session.keepFullCall) {
+        if (act.open) openSegment(act.open.startedAt);
+        if (act.close) closeSegment(act.close);
+      }
     }, FRAME_MS);
   }
 
@@ -184,10 +189,10 @@
 
   /* ---------- whole-call recording ---------- */
   function startFull() {
-    if (!S.dest) return;
+    if (!S.dest) return false;
     let rec;
     try { rec = MIME ? new MediaRecorder(S.dest.stream, { mimeType: MIME }) : new MediaRecorder(S.dest.stream); }
-    catch { return; }
+    catch { return false; }
     S.full = rec;
     S.fullChunks = [];
     S.fullStartedAt = Date.now();
@@ -202,7 +207,8 @@
       }, { once: true });
     });
     rec.ondataavailable = (e) => { if (e.data && e.data.size) S.fullChunks.push(e.data); };
-    try { rec.start(2000); } catch { S.full = null; S.fullDone = null; }
+    try { rec.start(2000); } catch { S.full = null; S.fullDone = null; return false; }
+    return true;
   }
 
   /* ---------- microphone (recording only, never to the speakers) ---------- */
@@ -287,7 +293,11 @@
 
     if (S.session.includeMic) await openMic();
     S.segmenter = core.createSegmenter({ threshold: core.thresholdFor(S.session.sensitivity) });
-    if (S.session.keepFullCall) startFull();
+    /* The whole-call recorder is the recording: it runs from here until stop() and is saved as a
+       single file, so a capture never shows up as a series of short clips. */
+    if (S.session.keepFullCall && !startFull()) {
+      throw new Error("The recorder didn't start in this browser. Stop other recordings and try again.");
+    }
     startVad();
     S.ticker = setInterval(publish, 500);
     S.limit = setTimeout(() => { stop("max-length"); }, MAX_CALL_MS);
