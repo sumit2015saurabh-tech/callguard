@@ -535,10 +535,16 @@ const labelChips = (rec) => rec.labels.length
   : `<span class="faint">No labels from the microservice.</span>`;
 const confBar = (c) => c == null ? `<span class="faint">–</span>` : `<span class="conf"><span class="bar"><span style="width:${Math.round(c * 100)}%"></span></span><span class="mono">${pct(c)}</span></span>`;
 /* Risk score 0-100 from the classifier (not a probability); falls back to a confidence value if a service sends one. */
-const scoreBar = (rec) => rec.riskScore == null ? confBar(rec.confidence)
-  : `<span class="conf"><span class="bar"><span style="width:${rec.riskScore}%"></span></span><span class="mono">${rec.riskScore}/100</span></span>`;
-const scoreText = (rec) => rec.riskScore != null ? `risk score ${rec.riskScore}/100` : rec.confidence != null ? `${pct(rec.confidence)} confidence` : "";
-const scoreValue = (rec) => rec.riskScore != null ? rec.riskScore : rec.confidence != null ? rec.confidence * 100 : -1;
+/* Calls saved before riskScore was stored still carry it as a "risk_score:NN" label. */
+const recScore = (rec) => {
+  if (rec.riskScore != null) return rec.riskScore;
+  const l = (rec.labels || []).find((x) => /^risk_score:\s*\d+(\.\d+)?$/i.test(String(x)));
+  return l ? Math.max(0, Math.min(100, Math.round(Number(String(l).split(":")[1])))) : null;
+};
+const scoreBar = (rec) => { const s = recScore(rec); return s == null ? confBar(rec.confidence)
+  : `<span class="conf"><span class="bar"><span style="width:${s}%"></span></span><span class="mono">${s}/100</span></span>`; };
+const scoreText = (rec) => { const s = recScore(rec); return s != null ? `risk score ${s}/100` : rec.confidence != null ? `${pct(rec.confidence)} confidence` : ""; };
+const scoreValue = (rec) => { const s = recScore(rec); return s != null ? s : rec.confidence != null ? rec.confidence * 100 : -1; };
 const alertCount = (rec) => rec.notifications.filter((n) => ["sent", "delivered", "queued"].includes(n.status)).length;
 
 const notifStatus = (n) => ({
